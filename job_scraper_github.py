@@ -1,0 +1,36 @@
+"""
+GitHub Actions wrapper for job_scraper.py
+Loads email credentials from environment variables (GitHub Secrets)
+instead of config.json, then runs the scraper normally.
+"""
+
+import os
+import json
+
+# Load config and override email settings from environment variables
+config_path = os.path.join(os.path.dirname(__file__), "config.json")
+with open(config_path, "r", encoding="utf-8") as f:
+    config = json.load(f)
+
+# Override email from GitHub Secrets
+sender = os.environ.get("SENDER_EMAIL", "")
+password = os.environ.get("SENDER_PASSWORD", "")
+recipient = os.environ.get("RECIPIENT_EMAIL", "")
+
+if sender and password and recipient:
+    config["email"]["sender_email"] = sender
+    config["email"]["sender_password"] = password
+    config["email"]["recipient_email"] = recipient
+    config["email"]["enabled"] = True
+    print(f"✅ Email configured from GitHub Secrets → {recipient}")
+else:
+    print("⚠️ Email secrets not set! Set SENDER_EMAIL, SENDER_PASSWORD, RECIPIENT_EMAIL in GitHub Secrets.")
+    print("   The scraper will run but won't send emails.")
+
+# Save updated config temporarily
+with open(config_path, "w", encoding="utf-8") as f:
+    json.dump(config, f, indent=2, ensure_ascii=False)
+
+# Now run the actual scraper
+from job_scraper import run_scraper
+run_scraper()
