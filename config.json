@@ -138,9 +138,9 @@
     "enabled": true,
     "smtp_server": "smtp.gmail.com",
     "smtp_port": 587,
-    "sender_email": "bendaalon@gmail.com",
-    "sender_password": "zrgs hblg xqrx umbm",
-    "recipient_email": "bendaalon@gmail.com"
+    "sender_email": "SENDER_EMAIL",
+    "sender_password": "SENDER_PASSWORD",
+    "recipient_email": "RECIPIENT_EMAIL"
   },
   "schedule_interval_minutes": 60,
   "headless": true,
