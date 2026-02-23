@@ -132,7 +132,21 @@
     {"url": "https://il.indeed.com/jobs?q=&l=israel&from=searchOnDesktopSerp&vjk=7ace16f34f222caa", "name": "Indeed"},
     {"url": "https://redhat.wd5.myworkdayjobs.com/en-US/jobs", "name": "Red Hat"},
     {"url": "https://www.comeet.com/jobs/echo/9A.006?location=Tel%20Aviv", "name": "Echo"},
-    {"url": "https://careers.netapp.com/search-jobs/Israel?orgIds=27600&alp=294640&alt=2", "name": "NetApp"}
+    {"url": "https://careers.netapp.com/search-jobs/Israel?orgIds=27600&alp=294640&alt=2", "name": "NetApp"},
+    {"url": "https://www.gotfriends.co.il/jobslobby/?utm_source=google&utm_medium=cpc&utm_campaign=competitor&gad_source=1&gad_campaignid=190034743&gbraid=0AAAAADpX1Vkh4VbyE8_h39zD3RkVJ-vi5&gclid=CjwKCAiAkvDMBhBMEiwAnUA9BRdEIlzT5MJJ6ipRFpP0Yg7INQNpipkvZ6G5e2fEGYvxcNdVq8isnhoCG7wQAvD_BwE", "name": "gotfriend"},
+    {"url": "https://snyk.io/careers/all-jobs/?location=Israel", "name": "synk"},
+    {"url": "https://www.armis.com/armis-careers/#discoverjobs", "name": "armis"},
+    {"url": "https://www.comeet.com/jobs/vega/C9.009?location=Israel", "name": "vega"},
+    {"url": "https://www.notraffic.com/careers/", "name": "notraffic"},
+    {"url": "https://elbitsystemscareer.com/?locale=en_US", "name": "Elbit Systems"},
+    {"url": "https://jobs.dell.com/search-jobs/israel/375/1", "name": "Dell"},
+    {"url": "https://careers.teva/", "name": "Teva"},
+    {"url": "https://careers.ebayinc.com/search-jobs?location=Israel", "name": "eBay"},
+    {"url": "https://www.lsports.eu/careers/", "name": "LSports"},
+    {"url": "https://www.develeap.com/careers/", "name": "Develeap"},
+    {"url": "https://jobs.hp.com/en/search-results?keywords=&p=ChIJi8-cRiS_AhURkMKXjkDORSc&placeid=ChIJi8-cRiS_AhURkMKXjkDORSc&location=Israel", "name": "HP"},
+    {"url": "https://www.matrix.co.il/careers/", "name": "Matrix"},
+    {"url": "https://www.sqlink.com/career/", "name": "SQLINK"}
   ],
   "email": {
     "enabled": true,
