@@ -165,7 +165,8 @@
     {"url": "https://www.ceragon.com/careers", "name": "Ceragon Networks"},
     {"url": "https://www.silicom-usa.com/careers/", "name": "Silicom"},
     {"url": "https://www.comeet.com/jobs/earnix/93.00B?utm_source=secrethunter.io&utm_medium=website&utm_campaign=job-updates&location=Ramat%20Gan,%20Israel", "name": "earnix"},
-    {"url": "https://jobs.dell.com/en/location/israel-jobs/375/294640/2", "name": "dell"}
+    {"url": "https://jobs.dell.com/en/location/israel-jobs/375/294640/2", "name": "dell"},
+    {"url": "https://www.glassdoor.com/Job/israel-jobs-SRCH_IL.0,6_IN119.htm?sgocId=1007", "name": "GlassDoor"}
   ],
   "email": {
     "enabled": true,
