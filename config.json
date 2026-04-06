@@ -168,7 +168,8 @@
     {"url": "https://jobs.dell.com/en/location/israel-jobs/375/294640/2", "name": "dell"},
     {"url": "https://www.glassdoor.com/Job/israel-jobs-SRCH_IL.0,6_IN119.htm?sgocId=1007", "name": "GlassDoor"},
     {"url": "https://corporate.solaredge.com/en/careers/open-positions", "name": "Solar Edge"},
-    {"url": "https://alma.security/Career", "name": "Alma Security"}
+    {"url": "https://alma.security/Career", "name": "Alma Security"},
+    {"url": "https://verix.com/careers/", "name": "Verix"}
   ],
   "email": {
     "enabled": true,
