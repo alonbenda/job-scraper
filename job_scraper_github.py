@@ -1,7 +1,7 @@
 """
 GitHub Actions wrapper for job_scraper.py
-Loads email credentials from environment variables (GitHub Secrets)
-instead of config.json, then runs the scraper normally.
+Loads email and Supabase credentials from environment variables (GitHub Secrets)
+then runs the scraper normally.
 """
 
 import os
@@ -24,8 +24,15 @@ if sender and password and recipient:
     config["email"]["enabled"] = True
     print(f"✅ Email configured from GitHub Secrets → {recipient}")
 else:
-    print("⚠️ Email secrets not set! Set SENDER_EMAIL, SENDER_PASSWORD, RECIPIENT_EMAIL in GitHub Secrets.")
-    print("   The scraper will run but won't send emails.")
+    print("⚠️ Email secrets not set!")
+
+# Check Supabase
+supabase_url = os.environ.get("SUPABASE_URL", "")
+supabase_key = os.environ.get("SUPABASE_KEY", "")
+if supabase_url and supabase_key:
+    print(f"✅ Supabase configured → {supabase_url}")
+else:
+    print("⚠️ Supabase secrets not set! Using local files.")
 
 # Save updated config temporarily
 with open(config_path, "w", encoding="utf-8") as f:

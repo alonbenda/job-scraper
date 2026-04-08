@@ -1225,12 +1225,30 @@ def cleanup_stale_jobs(seen_jobs: dict, currently_live_ids: set, config: dict):
 
 def run_scraper():
     config = load_config()
-    seen_jobs = load_seen_jobs()
     role_keywords = config.get("role_keywords", ["student", "intern", "internship"])
     field_keywords = config.get("field_keywords", ["software", "engineer"])
     exclude_keywords = config.get("exclude_keywords", [])
-    urls = config["urls"]
     location_filters = config.get("location_filter", [])
+
+    # Decide data source: Supabase or local files
+    try:
+        import db
+        use_db = db.is_configured()
+    except ImportError:
+        use_db = False
+
+    if use_db:
+        logger.info("📦 Using Supabase database")
+        urls = db.get_all_sites()
+        seen_job_ids = db.get_seen_job_ids()
+        if not urls:
+            logger.error("No sites found in database! Run migrate_to_supabase.py first.")
+            return []
+    else:
+        logger.info("📁 Using local files")
+        urls = config["urls"]
+        seen_jobs = load_seen_jobs()
+        seen_job_ids = set(seen_jobs.keys())
 
     logger.info("=" * 60)
     logger.info(f"Job Scraper v2 — Scanning {len(urls)} sites")
@@ -1247,6 +1265,7 @@ def run_scraper():
     failed_sites = []       # Sites that threw exceptions
     empty_sites = []        # Sites that returned 0 raw jobs (likely broken)
     currently_live_ids = set()  # Track job IDs found in this scan
+    existing_seen_ids = []  # Track IDs of jobs we've already seen
 
     for url_entry in urls:
         try:
@@ -1255,6 +1274,11 @@ def run_scraper():
             for j in jobs:
                 j["source_url"] = url_entry["url"]
             total_raw += len(jobs)
+
+            # Update site status in DB
+            if use_db:
+                status = "ok" if jobs else "empty"
+                db.update_site_status(url_entry["name"], status, len(jobs))
 
             # Track sites that returned 0 jobs
             if len(jobs) == 0:
@@ -1276,23 +1300,30 @@ def run_scraper():
             # Track all currently live job IDs (for cleanup)
             for job in matching:
                 jid = job_id(job)
+                job["id"] = jid  # Store ID on the job dict
                 currently_live_ids.add(jid)
 
             # Find new jobs (not seen before)
             new_jobs = []
             for job in matching:
-                jid = job_id(job)
-                if jid not in seen_jobs:
+                jid = job["id"]
+                if jid not in seen_job_ids:
                     new_jobs.append(job)
-                    seen_jobs[jid] = {
-                        "title": job["title"],
-                        "site": job["site"],
-                        "first_seen": datetime.now().isoformat(),
-                        "last_seen": datetime.now().isoformat(),
-                    }
+                    seen_job_ids.add(jid)  # Prevent duplicates within same scan
                 else:
-                    # Update last_seen timestamp for existing jobs
-                    seen_jobs[jid]["last_seen"] = datetime.now().isoformat()
+                    existing_seen_ids.append(jid)
+
+                # Update local seen_jobs dict if using files
+                if not use_db:
+                    if jid not in seen_jobs:
+                        seen_jobs[jid] = {
+                            "title": job["title"],
+                            "site": job["site"],
+                            "first_seen": datetime.now().isoformat(),
+                            "last_seen": datetime.now().isoformat(),
+                        }
+                    else:
+                        seen_jobs[jid]["last_seen"] = datetime.now().isoformat()
 
             if new_jobs:
                 logger.info(f"  ✅ [{url_entry.get('name')}] {len(new_jobs)} NEW matching job(s)")
@@ -1304,13 +1335,18 @@ def run_scraper():
             errors += 1
             failed_sites.append(url_entry.get("name", url_entry["url"]))
             logger.error(f"  ❌ [{url_entry.get('name', '?')}] Error: {e}")
+            if use_db:
+                db.update_site_status(url_entry.get("name", "?"), "error", 0)
 
-    # Save updated seen jobs
-    save_seen_jobs(seen_jobs)
-
-    # --- Stale job cleanup (once per day) ---
-    if config.get("cleanup_stale_jobs", True):
-        cleanup_stale_jobs(seen_jobs, currently_live_ids, config)
+    # Save data
+    if use_db:
+        db.save_new_jobs(all_new_jobs)
+        db.update_last_seen(existing_seen_ids)
+        db.delete_stale_jobs(currently_live_ids)
+    else:
+        save_seen_jobs(seen_jobs)
+        if config.get("cleanup_stale_jobs", True):
+            cleanup_stale_jobs(seen_jobs, currently_live_ids, config)
 
     # Summary
     logger.info("=" * 60)
