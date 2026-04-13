@@ -324,7 +324,7 @@ def extract_jobs_from_html(html: str, site_name: str, base_url: str) -> list[dic
 
 
 def scrape_with_selenium(url: str, site_name: str, headless: bool = True, timeout: int = 15) -> list[dict]:
-    """Use Selenium for JS-rendered pages."""
+    """Use Selenium for JS-rendered pages. Handles pagination and infinite scroll."""
     from selenium.webdriver.common.by import By
 
     driver = None
@@ -335,10 +335,15 @@ def scrape_with_selenium(url: str, site_name: str, headless: bool = True, timeou
         driver.get(url)
         time.sleep(timeout)
 
-        # Scroll to load lazy content
-        for _ in range(3):
-            driver.execute_script("window.scrollBy(0, 800);")
-            time.sleep(1)
+        # Scroll to load lazy content — do more scrolls for infinite scroll pages
+        last_height = driver.execute_script("return document.body.scrollHeight")
+        for scroll_attempt in range(10):
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(1.5)
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                break  # No more content loading
+            last_height = new_height
 
         # Check for Comeet iframe
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
@@ -350,22 +355,79 @@ def scrape_with_selenium(url: str, site_name: str, headless: bool = True, timeou
                 time.sleep(3)
                 break
 
-        # Try to click "Show More" / "Load More" buttons
-        try:
-            for btn_text in ["Show More", "Load More", "See All", "View All", "show more"]:
-                buttons = driver.find_elements(By.XPATH, f"//*[contains(text(), '{btn_text}')]")
-                for btn in buttons:
-                    try:
-                        btn.click()
-                        time.sleep(2)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        # Try to click "Show More" / "Load More" buttons repeatedly
+        for click_round in range(10):
+            clicked = False
+            try:
+                load_more_selectors = [
+                    "//*[contains(text(), 'Show More')]",
+                    "//*[contains(text(), 'Load More')]",
+                    "//*[contains(text(), 'See All')]",
+                    "//*[contains(text(), 'View All')]",
+                    "//*[contains(text(), 'show more')]",
+                    "//*[contains(text(), 'load more')]",
+                    "//*[contains(text(), 'הצג עוד')]",
+                    "//*[contains(text(), 'טען עוד')]",
+                    "//button[contains(@class, 'load-more')]",
+                    "//button[contains(@class, 'show-more')]",
+                    "//a[contains(@class, 'load-more')]",
+                    "//a[contains(@class, 'show-more')]",
+                ]
+                for xpath in load_more_selectors:
+                    buttons = driver.find_elements(By.XPATH, xpath)
+                    for btn in buttons:
+                        try:
+                            if btn.is_displayed() and btn.is_enabled():
+                                btn.click()
+                                time.sleep(2)
+                                clicked = True
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            if not clicked:
+                break
 
-        # Get full page HTML and parse it
-        page_html = driver.page_source
-        jobs = extract_jobs_from_html(page_html, site_name, url)
+        # Try pagination: click "Next" or page numbers
+        all_page_html = driver.page_source
+        for page_num in range(2, 6):  # Check up to 5 pages
+            clicked_next = False
+            try:
+                next_selectors = [
+                    "//a[contains(text(), 'Next')]",
+                    "//button[contains(text(), 'Next')]",
+                    "//a[contains(text(), 'הבא')]",
+                    "//button[contains(text(), 'הבא')]",
+                    "//a[contains(@aria-label, 'Next')]",
+                    "//button[contains(@aria-label, 'Next')]",
+                    "//a[contains(@class, 'next')]",
+                    "//button[contains(@class, 'next')]",
+                    "//li[contains(@class, 'next')]/a",
+                    f"//a[text()='{page_num}']",
+                    f"//button[text()='{page_num}']",
+                    "//a[contains(@rel, 'next')]",
+                ]
+                for xpath in next_selectors:
+                    elements = driver.find_elements(By.XPATH, xpath)
+                    for el in elements:
+                        try:
+                            if el.is_displayed() and el.is_enabled():
+                                el.click()
+                                time.sleep(3)
+                                all_page_html += "\n" + driver.page_source
+                                clicked_next = True
+                                break
+                        except Exception:
+                            pass
+                    if clicked_next:
+                        break
+            except Exception:
+                pass
+            if not clicked_next:
+                break
+
+        # Parse all collected HTML
+        jobs = extract_jobs_from_html(all_page_html, site_name, url)
 
         # Fallback: grab all visible text links
         if not jobs:
@@ -496,11 +558,58 @@ def scrape_site(url_entry: dict, config: dict) -> list[dict]:
         logger.info(f"  [{site_name}] Found {len(jobs)} raw job entries")
         return jobs
 
-    # Strategy 1: Try static fetch first (much faster)
+    # Strategy 1: Try static fetch first (much faster), with pagination
     html = try_static_fetch(url)
     jobs = []
     if html:
         jobs = extract_jobs_from_html(html, site_name, url)
+
+        # Try to follow pagination links (up to 5 pages)
+        if jobs:
+            from bs4 import BeautifulSoup
+            for page in range(2, 6):
+                try:
+                    soup = BeautifulSoup(html, "html.parser")
+                    next_link = None
+
+                    # Look for "next" links
+                    for a in soup.find_all("a"):
+                        href = a.get("href", "")
+                        text = a.get_text(strip=True).lower()
+                        aria = (a.get("aria-label") or "").lower()
+                        rel = (a.get("rel") or [""])
+                        cls = " ".join(a.get("class", [])).lower()
+
+                        if any(x in text for x in ["next", "הבא"]) or \
+                           any(x in aria for x in ["next"]) or \
+                           "next" in rel or \
+                           "next" in cls or \
+                           text == str(page):
+                            next_link = href
+                            break
+
+                    if not next_link:
+                        break
+
+                    # Build full URL if relative
+                    if next_link.startswith("/"):
+                        from urllib.parse import urlparse as _urlparse
+                        parsed = _urlparse(url)
+                        next_link = f"{parsed.scheme}://{parsed.netloc}{next_link}"
+                    elif not next_link.startswith("http"):
+                        next_link = url.rstrip("/") + "/" + next_link
+
+                    html = try_static_fetch(next_link)
+                    if html:
+                        page_jobs = extract_jobs_from_html(html, site_name, next_link)
+                        if page_jobs:
+                            jobs.extend(page_jobs)
+                        else:
+                            break
+                    else:
+                        break
+                except Exception:
+                    break
 
     # Strategy 2: If static didn't work well, use Selenium
     if len(jobs) < 2:
