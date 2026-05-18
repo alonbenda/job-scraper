@@ -1,15 +1,42 @@
-name: Job Scraper Daily Run
+name: Job Scraper CI/CD
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   schedule:
     # 11:00 AM Israel time (summer, IDT = UTC+3) → 08:00 UTC
-    # In winter (IST = UTC+2) this runs at 10:00 AM Israel time
     - cron: '0 8 * * *'
-  workflow_dispatch: # Allow manual trigger from GitHub
+  workflow_dispatch:
 
 jobs:
+  # CI: Run tests on every push/PR
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        run: |
+          python -m pytest tests.py -v
+
+  # CD: Run the scraper (only on schedule or manual trigger)
   scrape:
     runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout repository
