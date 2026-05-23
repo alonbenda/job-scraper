@@ -1,5 +1,5 @@
 {
-  "role_keywords": ["student", "intern", "internship"],
+  "role_keywords": ["student", "intern", "internship", "junior", "entry level", "entry-level", "new grad", "graduate"],
   "field_keywords": ["software", "engineer", "engineering", "developer", "development", "r&d", "devops", "backend", "frontend", "fullstack", "full-stack", "full stack", "data", "algorithm", "embedded", "firmware", "cloud", "infrastructure", "security", "cyber", "machine learning", "ml", "ai", "qa", "automation", "sre", "platform"],
   "exclude_keywords": ["senior", "manager", "management", "director", "lead", "principal", "staff", "vp", "head of", "chief"],
   "cv_path": "Alon Ben David - CV.pdf",
