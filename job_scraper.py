@@ -324,7 +324,7 @@ def extract_jobs_from_html(html: str, site_name: str, base_url: str) -> list[dic
 
 
 def scrape_with_selenium(url: str, site_name: str, headless: bool = True, timeout: int = 15) -> list[dict]:
-    """Use Selenium for JS-rendered pages. Handles pagination and infinite scroll."""
+    """Use Selenium for JS-rendered pages."""
     from selenium.webdriver.common.by import By
 
     driver = None
@@ -335,15 +335,10 @@ def scrape_with_selenium(url: str, site_name: str, headless: bool = True, timeou
         driver.get(url)
         time.sleep(timeout)
 
-        # Scroll to load lazy content — do more scrolls for infinite scroll pages
-        last_height = driver.execute_script("return document.body.scrollHeight")
-        for scroll_attempt in range(10):
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1.5)
-            new_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height == last_height:
-                break  # No more content loading
-            last_height = new_height
+        # Scroll to load lazy content
+        for _ in range(3):
+            driver.execute_script("window.scrollBy(0, 800);")
+            time.sleep(1)
 
         # Check for Comeet iframe
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
@@ -355,79 +350,22 @@ def scrape_with_selenium(url: str, site_name: str, headless: bool = True, timeou
                 time.sleep(3)
                 break
 
-        # Try to click "Show More" / "Load More" buttons repeatedly
-        for click_round in range(10):
-            clicked = False
-            try:
-                load_more_selectors = [
-                    "//*[contains(text(), 'Show More')]",
-                    "//*[contains(text(), 'Load More')]",
-                    "//*[contains(text(), 'See All')]",
-                    "//*[contains(text(), 'View All')]",
-                    "//*[contains(text(), 'show more')]",
-                    "//*[contains(text(), 'load more')]",
-                    "//*[contains(text(), 'הצג עוד')]",
-                    "//*[contains(text(), 'טען עוד')]",
-                    "//button[contains(@class, 'load-more')]",
-                    "//button[contains(@class, 'show-more')]",
-                    "//a[contains(@class, 'load-more')]",
-                    "//a[contains(@class, 'show-more')]",
-                ]
-                for xpath in load_more_selectors:
-                    buttons = driver.find_elements(By.XPATH, xpath)
-                    for btn in buttons:
-                        try:
-                            if btn.is_displayed() and btn.is_enabled():
-                                btn.click()
-                                time.sleep(2)
-                                clicked = True
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            if not clicked:
-                break
+        # Try to click "Show More" / "Load More" buttons
+        try:
+            for btn_text in ["Show More", "Load More", "See All", "View All", "show more"]:
+                buttons = driver.find_elements(By.XPATH, f"//*[contains(text(), '{btn_text}')]")
+                for btn in buttons:
+                    try:
+                        btn.click()
+                        time.sleep(2)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
-        # Try pagination: click "Next" or page numbers
-        all_page_html = driver.page_source
-        for page_num in range(2, 6):  # Check up to 5 pages
-            clicked_next = False
-            try:
-                next_selectors = [
-                    "//a[contains(text(), 'Next')]",
-                    "//button[contains(text(), 'Next')]",
-                    "//a[contains(text(), 'הבא')]",
-                    "//button[contains(text(), 'הבא')]",
-                    "//a[contains(@aria-label, 'Next')]",
-                    "//button[contains(@aria-label, 'Next')]",
-                    "//a[contains(@class, 'next')]",
-                    "//button[contains(@class, 'next')]",
-                    "//li[contains(@class, 'next')]/a",
-                    f"//a[text()='{page_num}']",
-                    f"//button[text()='{page_num}']",
-                    "//a[contains(@rel, 'next')]",
-                ]
-                for xpath in next_selectors:
-                    elements = driver.find_elements(By.XPATH, xpath)
-                    for el in elements:
-                        try:
-                            if el.is_displayed() and el.is_enabled():
-                                el.click()
-                                time.sleep(3)
-                                all_page_html += "\n" + driver.page_source
-                                clicked_next = True
-                                break
-                        except Exception:
-                            pass
-                    if clicked_next:
-                        break
-            except Exception:
-                pass
-            if not clicked_next:
-                break
-
-        # Parse all collected HTML
-        jobs = extract_jobs_from_html(all_page_html, site_name, url)
+        # Get full page HTML and parse it
+        page_html = driver.page_source
+        jobs = extract_jobs_from_html(page_html, site_name, url)
 
         # Fallback: grab all visible text links
         if not jobs:
@@ -558,58 +496,11 @@ def scrape_site(url_entry: dict, config: dict) -> list[dict]:
         logger.info(f"  [{site_name}] Found {len(jobs)} raw job entries")
         return jobs
 
-    # Strategy 1: Try static fetch first (much faster), with pagination
+    # Strategy 1: Try static fetch first (much faster)
     html = try_static_fetch(url)
     jobs = []
     if html:
         jobs = extract_jobs_from_html(html, site_name, url)
-
-        # Try to follow pagination links (up to 5 pages)
-        if jobs:
-            from bs4 import BeautifulSoup
-            for page in range(2, 6):
-                try:
-                    soup = BeautifulSoup(html, "html.parser")
-                    next_link = None
-
-                    # Look for "next" links
-                    for a in soup.find_all("a"):
-                        href = a.get("href", "")
-                        text = a.get_text(strip=True).lower()
-                        aria = (a.get("aria-label") or "").lower()
-                        rel = (a.get("rel") or [""])
-                        cls = " ".join(a.get("class", [])).lower()
-
-                        if any(x in text for x in ["next", "הבא"]) or \
-                           any(x in aria for x in ["next"]) or \
-                           "next" in rel or \
-                           "next" in cls or \
-                           text == str(page):
-                            next_link = href
-                            break
-
-                    if not next_link:
-                        break
-
-                    # Build full URL if relative
-                    if next_link.startswith("/"):
-                        from urllib.parse import urlparse as _urlparse
-                        parsed = _urlparse(url)
-                        next_link = f"{parsed.scheme}://{parsed.netloc}{next_link}"
-                    elif not next_link.startswith("http"):
-                        next_link = url.rstrip("/") + "/" + next_link
-
-                    html = try_static_fetch(next_link)
-                    if html:
-                        page_jobs = extract_jobs_from_html(html, site_name, next_link)
-                        if page_jobs:
-                            jobs.extend(page_jobs)
-                        else:
-                            break
-                    else:
-                        break
-                except Exception:
-                    break
 
     # Strategy 2: If static didn't work well, use Selenium
     if len(jobs) < 2:
@@ -1074,6 +965,15 @@ def score_jobs(jobs: list[dict], cv_data: dict, config: dict) -> list[dict]:
     jobs.sort(key=lambda j: j.get("fit_score", -1), reverse=True)
     return jobs
 
+def _categorize_job(job: dict) -> str:
+    """Categorize a job as 'student' or 'junior' based on matched role keywords."""
+    roles = job.get("matched_roles", [])
+    for r in roles:
+        if r in ("student", "intern", "internship"):
+            return "student"
+    return "junior"
+
+
 def build_email_html(new_jobs: list[dict], config: dict,
                      failed_sites: list[str] = None, empty_sites: list[str] = None) -> str:
     role_kws = config.get("role_keywords", [])
@@ -1096,105 +996,57 @@ def build_email_html(new_jobs: list[dict], config: dict,
             color, bg = "#991b1b", "#fee2e2"  # Red
         return f'<span style="background:{bg};padding:2px 8px;border-radius:4px;font-size:12px;font-weight:bold;color:{color};">{score}%</span>'
 
-    # Sort jobs by fit score (highest first) if CV is configured
-    if has_cv:
-        new_jobs_sorted = sorted(new_jobs, key=lambda j: j.get("fit_score", -1), reverse=True)
-    else:
-        new_jobs_sorted = new_jobs
+    def _build_jobs_table(jobs_list, has_cv):
+        """Build an HTML table for a list of jobs."""
+        if not jobs_list:
+            return ""
 
-    # Build jobs table rows
-    rows = ""
-    for job in new_jobs_sorted:
-        link_html = f'<a href="{job["link"]}" style="color:#2563eb;">Apply →</a>' if job.get("link") else "N/A"
-        roles = ", ".join(job.get("matched_roles", []))
-        fields = ", ".join(job.get("matched_fields", []))
-        posted = job.get("posted_date", "") or "—"
-
-        # Fit score column
-        fit_html = ""
+        # Sort by fit score if CV configured
         if has_cv:
-            score = job.get("fit_score", -1)
-            fit_html = f"""
-                <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;">
-                    {_score_badge(score)}
-                </td>"""
+            jobs_list = sorted(jobs_list, key=lambda j: j.get("fit_score", -1), reverse=True)
 
-            # Skills detail (show on hover via title attribute)
-            matched_s = job.get("matched_skills", [])
-            missing_s = job.get("missing_skills", [])
-            if matched_s or missing_s:
-                tooltip = f"✅ You have: {', '.join(matched_s[:10])}"
-                if missing_s:
-                    tooltip += f"\\n❌ Missing: {', '.join(missing_s[:10])}"
-                fit_html = f"""
-                <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;" title="{tooltip}">
-                    {_score_badge(score)}
-                </td>"""
-
-        rows += f"""
-            <tr>
-                <td style="padding:8px 12px;border-bottom:1px solid #eee;">{job['title']}</td>
-                <td style="padding:8px 12px;border-bottom:1px solid #eee;">{job['site']}</td>
-                {fit_html}
-                <td style="padding:8px 12px;border-bottom:1px solid #eee;white-space:nowrap;">
-                    <span style="background:#fef3c7;padding:2px 6px;border-radius:4px;font-size:11px;color:#92400e;">{posted}</span>
-                </td>
-                <td style="padding:8px 12px;border-bottom:1px solid #eee;">
-                    <span style="background:#dcfce7;padding:2px 6px;border-radius:4px;font-size:11px;color:#166534;">{roles}</span>
-                    <span style="background:#e0f2fe;padding:2px 6px;border-radius:4px;font-size:11px;color:#1e40af;">{fields}</span>
-                </td>
-                <td style="padding:8px 12px;border-bottom:1px solid #eee;">{link_html}</td>
-            </tr>"""
-
-    # Fit score header column
-    fit_header = ""
-    if has_cv:
-        fit_header = '<th style="padding:10px 12px;text-align:center;border-bottom:2px solid #e2e8f0;">CV Fit</th>'
-
-    # Build jobs section
-    jobs_section = ""
-    if new_jobs:
-        # Skills detail section (expandable list under the table)
-        skills_detail = ""
+        fit_header = ""
         if has_cv:
-            detail_rows = ""
-            for job in new_jobs_sorted:
+            fit_header = '<th style="padding:10px 12px;text-align:center;border-bottom:2px solid #e2e8f0;">CV Fit</th>'
+
+        rows = ""
+        for job in jobs_list:
+            link_html = f'<a href="{job["link"]}" style="color:#2563eb;">Apply →</a>' if job.get("link") else "N/A"
+            roles = ", ".join(job.get("matched_roles", []))
+            fields = ", ".join(job.get("matched_fields", []))
+            posted = job.get("posted_date", "") or "—"
+
+            fit_html = ""
+            if has_cv:
                 score = job.get("fit_score", -1)
-                if score < 0:
-                    continue
                 matched_s = job.get("matched_skills", [])
                 missing_s = job.get("missing_skills", [])
-                matched_html = ", ".join(f'<span style="background:#dcfce7;padding:1px 4px;border-radius:3px;font-size:10px;color:#166534;">{s}</span>' for s in matched_s[:8])
-                missing_html = ", ".join(f'<span style="background:#fee2e2;padding:1px 4px;border-radius:3px;font-size:10px;color:#991b1b;">{s}</span>' for s in missing_s[:8])
-                if not matched_html and not missing_html:
-                    continue
-                detail_rows += f"""
+                tooltip = ""
+                if matched_s or missing_s:
+                    tooltip = f"✅ You have: {', '.join(matched_s[:10])}"
+                    if missing_s:
+                        tooltip += f"\\n❌ Missing: {', '.join(missing_s[:10])}"
+                fit_html = f"""
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;" title="{tooltip}">
+                        {_score_badge(score)}
+                    </td>"""
+
+            rows += f"""
                 <tr>
-                    <td style="padding:4px 8px;border-bottom:1px solid #f3f4f6;font-size:12px;">{job['title'][:40]}</td>
-                    <td style="padding:4px 8px;border-bottom:1px solid #f3f4f6;font-size:12px;">{_score_badge(score)}</td>
-                    <td style="padding:4px 8px;border-bottom:1px solid #f3f4f6;font-size:11px;">{matched_html or "—"}</td>
-                    <td style="padding:4px 8px;border-bottom:1px solid #f3f4f6;font-size:11px;">{missing_html or "—"}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">{job['title']}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">{job['site']}</td>
+                    {fit_html}
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;white-space:nowrap;">
+                        <span style="background:#fef3c7;padding:2px 6px;border-radius:4px;font-size:11px;color:#92400e;">{posted}</span>
+                    </td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">
+                        <span style="background:#dcfce7;padding:2px 6px;border-radius:4px;font-size:11px;color:#166534;">{roles}</span>
+                        <span style="background:#e0f2fe;padding:2px 6px;border-radius:4px;font-size:11px;color:#1e40af;">{fields}</span>
+                    </td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">{link_html}</td>
                 </tr>"""
 
-            if detail_rows:
-                skills_detail = f"""
-                <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin-top:16px;">
-                    <h3 style="margin:0 0 12px;font-size:15px;color:#334155;">📊 Skills Breakdown</h3>
-                    <table style="border-collapse:collapse;width:100%;font-size:12px;">
-                        <thead>
-                            <tr>
-                                <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #cbd5e1;">Job</th>
-                                <th style="padding:6px 8px;text-align:center;border-bottom:1px solid #cbd5e1;">Score</th>
-                                <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #cbd5e1;">✅ Your Skills</th>
-                                <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #cbd5e1;">❌ Missing</th>
-                            </tr>
-                        </thead>
-                        <tbody>{detail_rows}</tbody>
-                    </table>
-                </div>"""
-
-        jobs_section = f"""
-        <p style="color:#666;margin-bottom:16px;">Found {len(new_jobs)} new job(s){' (sorted by CV fit)' if has_cv else ''}:</p>
+        return f"""
         <table style="border-collapse:collapse;width:100%;font-size:14px;">
             <thead>
                 <tr style="background:#f8fafc;">
@@ -1207,8 +1059,73 @@ def build_email_html(new_jobs: list[dict], config: dict,
                 </tr>
             </thead>
             <tbody>{rows}</tbody>
-        </table>
-        {skills_detail}
+        </table>"""
+
+    # Split jobs into categories
+    student_jobs = [j for j in new_jobs if _categorize_job(j) == "student"]
+    junior_jobs = [j for j in new_jobs if _categorize_job(j) == "junior"]
+
+    # Build sections
+    jobs_section = ""
+
+    if student_jobs:
+        jobs_section += f"""
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:16px;margin-bottom:20px;">
+            <h2 style="margin:0 0 12px;font-size:18px;color:#166534;">🎓 Student / Intern Positions ({len(student_jobs)})</h2>
+            {_build_jobs_table(student_jobs, has_cv)}
+        </div>"""
+
+    if junior_jobs:
+        jobs_section += f"""
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:16px;margin-bottom:20px;">
+            <h2 style="margin:0 0 12px;font-size:18px;color:#1e40af;">🚀 Junior / Entry-Level Positions ({len(junior_jobs)})</h2>
+            {_build_jobs_table(junior_jobs, has_cv)}
+        </div>"""
+
+    # Skills breakdown for all jobs with CV
+    skills_detail = ""
+    if has_cv and new_jobs:
+        all_sorted = sorted(new_jobs, key=lambda j: j.get("fit_score", -1), reverse=True)
+        detail_rows = ""
+        for job in all_sorted:
+            score = job.get("fit_score", -1)
+            if score < 0:
+                continue
+            matched_s = job.get("matched_skills", [])
+            missing_s = job.get("missing_skills", [])
+            matched_html = ", ".join(f'<span style="background:#dcfce7;padding:1px 4px;border-radius:3px;font-size:10px;color:#166534;">{s}</span>' for s in matched_s[:8])
+            missing_html = ", ".join(f'<span style="background:#fee2e2;padding:1px 4px;border-radius:3px;font-size:10px;color:#991b1b;">{s}</span>' for s in missing_s[:8])
+            if not matched_html and not missing_html:
+                continue
+            category_icon = "🎓" if _categorize_job(job) == "student" else "🚀"
+            detail_rows += f"""
+            <tr>
+                <td style="padding:4px 8px;border-bottom:1px solid #f3f4f6;font-size:12px;">{category_icon} {job['title'][:40]}</td>
+                <td style="padding:4px 8px;border-bottom:1px solid #f3f4f6;font-size:12px;">{_score_badge(score)}</td>
+                <td style="padding:4px 8px;border-bottom:1px solid #f3f4f6;font-size:11px;">{matched_html or "—"}</td>
+                <td style="padding:4px 8px;border-bottom:1px solid #f3f4f6;font-size:11px;">{missing_html or "—"}</td>
+            </tr>"""
+
+        if detail_rows:
+            skills_detail = f"""
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin-top:16px;">
+                <h3 style="margin:0 0 12px;font-size:15px;color:#334155;">📊 Skills Breakdown</h3>
+                <table style="border-collapse:collapse;width:100%;font-size:12px;">
+                    <thead>
+                        <tr>
+                            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #cbd5e1;">Job</th>
+                            <th style="padding:6px 8px;text-align:center;border-bottom:1px solid #cbd5e1;">Score</th>
+                            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #cbd5e1;">✅ Your Skills</th>
+                            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #cbd5e1;">❌ Missing</th>
+                        </tr>
+                    </thead>
+                    <tbody>{detail_rows}</tbody>
+                </table>
+            </div>"""
+
+    if jobs_section:
+        jobs_section += skills_detail
+        jobs_section += f"""
         <p style="margin-top:12px;color:#999;font-size:11px;">
             ℹ️ Posted date shown when available. "—" means the site doesn't display a date.
             {' CV Fit shows % of job skills matching your CV.' if has_cv else ''}
@@ -1251,12 +1168,22 @@ def build_email_html(new_jobs: list[dict], config: dict,
             </table>
         </div>"""
 
+    # Count by category for the header
+    student_count = len([j for j in new_jobs if _categorize_job(j) == "student"])
+    junior_count = len([j for j in new_jobs if _categorize_job(j) == "junior"])
+    category_summary = []
+    if student_count:
+        category_summary.append(f"🎓 {student_count} Student/Intern")
+    if junior_count:
+        category_summary.append(f"🚀 {junior_count} Junior/Entry-Level")
+    category_text = " | ".join(category_summary) if category_summary else ""
+
     return f"""
     <html>
     <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1a1a1a;max-width:950px;margin:0 auto;padding:20px;">
         <div style="background:linear-gradient(135deg,#2563eb,#7c3aed);color:white;padding:24px;border-radius:12px;margin-bottom:20px;">
-            <h1 style="margin:0;font-size:24px;">🔔 {len(new_jobs)} New Student/Intern Engineering Job(s) in Israel!</h1>
-            <p style="margin:8px 0 0;opacity:0.9;">Role: {', '.join(role_kws)} | Field: engineering | Location: Israel</p>
+            <h1 style="margin:0;font-size:24px;">🔔 {len(new_jobs)} New Engineering Job(s) in Israel!</h1>
+            <p style="margin:8px 0 0;opacity:0.9;">{category_text}</p>
             <p style="margin:4px 0 0;opacity:0.7;font-size:13px;">{datetime.now().strftime('%B %d, %Y %H:%M')}</p>
         </div>
         {jobs_section}
