@@ -587,12 +587,15 @@ def matches_location(job: dict, location_filters: list[str]) -> bool:
         return True
 
     # Check all available text from the job
-    text_to_check = " ".join([
+    raw_text = " ".join([
         job.get("title", ""),
         job.get("link", ""),
         job.get("location", ""),
         job.get("site", ""),
     ]).lower()
+    # Normalize: replace hyphens, underscores, URL encoding with spaces
+    # so "United-Kingdom" and "New%20York" become "united kingdom" and "new york"
+    text_to_check = raw_text.replace("-", " ").replace("_", " ").replace("%20", " ").replace("+", " ")
 
     # If the source URL already has Israel/location filter, assume it's relevant
     url_indicators = [
