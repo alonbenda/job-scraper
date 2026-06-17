@@ -1306,76 +1306,98 @@ def run_scraper():
     currently_live_ids = set()  # Track job IDs found in this scan
     existing_seen_ids = []  # Track IDs of jobs we've already seen
 
-    for url_entry in urls:
+    # --- Parallel scraping with ThreadPoolExecutor ---
+    max_workers = config.get("max_workers", 5)
+    logger.info(f"🚀 Scraping {len(urls)} sites with {max_workers} parallel workers...")
+
+    def _scrape_one(url_entry):
+        """Scrape a single site — runs in a thread."""
         try:
-            # Add source_url to track origin
             jobs = scrape_site(url_entry, config)
             for j in jobs:
                 j["source_url"] = url_entry["url"]
-            total_raw += len(jobs)
-
-            # Update site status in DB
-            if use_db:
-                status = "ok" if jobs else "empty"
-                db.update_site_status(url_entry["name"], status, len(jobs))
-
-            # Track sites that returned 0 jobs
-            if len(jobs) == 0:
-                empty_sites.append(url_entry.get("name", url_entry["url"]))
-
-            # Filter: must match ROLE + FIELD + LOCATION
-            matching = []
-            for job in jobs:
-                match = matches_job(job["title"], role_keywords, field_keywords, exclude_keywords)
-                if match:
-                    job["matched_keywords"] = match["all"]
-                    job["matched_roles"] = match["roles"]
-                    job["matched_fields"] = match["fields"]
-                    if matches_location(job, location_filters):
-                        matching.append(job)
-
-            total_matching += len(matching)
-
-            # Track all currently live job IDs (for cleanup)
-            for job in matching:
-                jid = job_id(job)
-                job["id"] = jid  # Store ID on the job dict
-                currently_live_ids.add(jid)
-
-            # Find new jobs (not seen before)
-            new_jobs = []
-            for job in matching:
-                jid = job["id"]
-                if jid not in seen_job_ids:
-                    new_jobs.append(job)
-                    seen_job_ids.add(jid)  # Prevent duplicates within same scan
-                else:
-                    existing_seen_ids.append(jid)
-
-                # Update local seen_jobs dict if using files
-                if not use_db:
-                    if jid not in seen_jobs:
-                        seen_jobs[jid] = {
-                            "title": job["title"],
-                            "site": job["site"],
-                            "first_seen": datetime.now().isoformat(),
-                            "last_seen": datetime.now().isoformat(),
-                        }
-                    else:
-                        seen_jobs[jid]["last_seen"] = datetime.now().isoformat()
-
-            if new_jobs:
-                logger.info(f"  ✅ [{url_entry.get('name')}] {len(new_jobs)} NEW matching job(s)")
-                all_new_jobs.extend(new_jobs)
-            else:
-                logger.info(f"  [{url_entry.get('name')}] {len(matching)} matching, 0 new")
-
+            return {"url_entry": url_entry, "jobs": jobs, "error": None}
         except Exception as e:
+            return {"url_entry": url_entry, "jobs": [], "error": str(e)}
+
+    # Run scraping in parallel
+    scrape_results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_scrape_one, entry): entry for entry in urls}
+        for future in as_completed(futures):
+            scrape_results.append(future.result())
+
+    # --- Process results sequentially ---
+    for result in scrape_results:
+        url_entry = result["url_entry"]
+        jobs = result["jobs"]
+        error = result["error"]
+
+        if error:
             errors += 1
             failed_sites.append(url_entry.get("name", url_entry["url"]))
-            logger.error(f"  ❌ [{url_entry.get('name', '?')}] Error: {e}")
+            logger.error(f"  ❌ [{url_entry.get('name', '?')}] Error: {error}")
             if use_db:
                 db.update_site_status(url_entry.get("name", "?"), "error", 0)
+            continue
+
+        total_raw += len(jobs)
+
+        # Update site status in DB
+        if use_db:
+            status = "ok" if jobs else "empty"
+            db.update_site_status(url_entry["name"], status, len(jobs))
+
+        # Track sites that returned 0 jobs
+        if len(jobs) == 0:
+            empty_sites.append(url_entry.get("name", url_entry["url"]))
+
+        # Filter: must match ROLE + FIELD + LOCATION
+        matching = []
+        for job in jobs:
+            match = matches_job(job["title"], role_keywords, field_keywords, exclude_keywords)
+            if match:
+                job["matched_keywords"] = match["all"]
+                job["matched_roles"] = match["roles"]
+                job["matched_fields"] = match["fields"]
+                if matches_location(job, location_filters):
+                    matching.append(job)
+
+        total_matching += len(matching)
+
+        # Track all currently live job IDs (for cleanup)
+        for job in matching:
+            jid = job_id(job)
+            job["id"] = jid  # Store ID on the job dict
+            currently_live_ids.add(jid)
+
+        # Find new jobs (not seen before)
+        new_jobs = []
+        for job in matching:
+            jid = job["id"]
+            if jid not in seen_job_ids:
+                new_jobs.append(job)
+                seen_job_ids.add(jid)  # Prevent duplicates within same scan
+            else:
+                existing_seen_ids.append(jid)
+
+            # Update local seen_jobs dict if using files
+            if not use_db:
+                if jid not in seen_jobs:
+                    seen_jobs[jid] = {
+                        "title": job["title"],
+                        "site": job["site"],
+                        "first_seen": datetime.now().isoformat(),
+                        "last_seen": datetime.now().isoformat(),
+                    }
+                else:
+                    seen_jobs[jid]["last_seen"] = datetime.now().isoformat()
+
+        if new_jobs:
+            logger.info(f"  ✅ [{url_entry.get('name')}] {len(new_jobs)} NEW matching job(s)")
+            all_new_jobs.extend(new_jobs)
+        else:
+            logger.info(f"  [{url_entry.get('name')}] {len(matching)} matching, 0 new")
 
     # Save data
     if use_db:

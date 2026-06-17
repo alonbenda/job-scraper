@@ -182,5 +182,6 @@
   "headless": true,
   "page_load_timeout": 15,
   "cleanup_stale_jobs": true,
-  "cleanup_interval_hours": 24
+  "cleanup_interval_hours": 24,
+  "max_workers": 5
 }
