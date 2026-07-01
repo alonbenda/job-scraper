@@ -1,7 +1,7 @@
 {
-  "role_keywords": ["student", "intern", "internship", "junior", "entry level", "entry-level", "new grad", "graduate"],
-  "field_keywords": ["software", "engineer", "engineering", "developer", "development", "r&d", "devops", "backend", "frontend", "fullstack", "full-stack", "full stack", "data", "algorithm", "embedded", "firmware", "cloud", "infrastructure", "security", "cyber", "machine learning", "ml", "ai", "qa", "automation", "sre", "platform"],
-  "exclude_keywords": ["senior", "manager", "management", "director", "lead", "principal", "staff", "vp", "head of", "chief"],
+  "role_keywords": ["student", "intern", "internship", "junior", "entry level", "entry-level", "new grad", "graduate", "סטודנט", "מתמחה", "התמחות", "ג'וניור", "זוטר", "בוגר"],
+  "field_keywords": ["software", "engineer", "engineering", "developer", "development", "r&d", "devops", "backend", "frontend", "fullstack", "full-stack", "full stack", "data", "algorithm", "embedded", "firmware", "cloud", "infrastructure", "security", "cyber", "machine learning", "ml", "ai", "qa", "automation", "sre", "platform", "תוכנה", "מפתח", "פיתוח", "מהנדס", "הנדסה", "הנדסת", "אלגוריתם", "דאטה", "נתונים", "ענן", "סייבר", "אבטחה", "אוטומציה", "בדיקות", "אמבדד", "למידת מכונה"],
+  "exclude_keywords": ["senior", "manager", "management", "director", "lead", "principal", "staff", "vp", "head of", "chief", "בכיר", "מנהל", "ניהול", "סמנכ\"ל", "מוביל"],
   "cv_path": "Alon Ben David - CV.pdf",
   "location_filter": ["israel", "tel aviv", "tel-aviv", "herzliya", "haifa", "petach tikva", "petah tikva", "beer sheva", "be'er sheva", "ramat gan", "hod hasharon", "jerusalem", "kfar saba", "kefar sava", "netanya", "rehovot", "yokneam", "caesarea", "ra'anana", "raanana", "modiin", "modi'in"],
   "urls": [
