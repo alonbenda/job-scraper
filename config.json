@@ -122,13 +122,6 @@
     {"url": "https://careers.hpe.com/us/en/c/engineering-jobs", "name": "HPE"},
     {"url": "https://hpe.wd5.myworkdayjobs.com/en-US/Jobsathpe", "name": "HPE (Workday)"},
     {"url": "https://www.superplay.co/careers/", "name": "Superplay"},
-    {"url": "https://www.google.com/search?q=software+intern+israel&udm=8", "name": "Google Jobs - Software Intern"},
-    {"url": "https://www.google.com/search?q=software+student+position+israel&udm=8", "name": "Google Jobs - Software Student"},
-    {"url": "https://www.google.com/search?q=software+engineering+intern+israel&udm=8", "name": "Google Jobs - Engineering Intern"},
-    {"url": "https://www.google.com/search?q=developer+intern+israel&udm=8", "name": "Google Jobs - Developer Intern"},
-    {"url": "https://www.google.com/search?q=data+engineer+student+israel&udm=8", "name": "Google Jobs - Data Student"},
-    {"url": "https://www.google.com/search?q=QA+intern+israel&udm=8", "name": "Google Jobs - QA Intern"},
-    {"url": "https://www.google.com/search?q=devops+intern+israel&udm=8", "name": "Google Jobs - DevOps Intern"},
     {"url": "https://il.indeed.com/jobs?q=&l=israel&from=searchOnDesktopSerp&vjk=7ace16f34f222caa", "name": "Indeed"},
     {"url": "https://redhat.wd5.myworkdayjobs.com/en-US/jobs", "name": "Red Hat"},
     {"url": "https://www.comeet.com/jobs/echo/9A.006?location=Tel%20Aviv", "name": "Echo"},
@@ -169,6 +162,15 @@
     {"url": "https://www.glassdoor.com/Job/israel-jobs-SRCH_IL.0,6_IN119.htm?sgocId=1007", "name": "GlassDoor"},
     {"url": "https://alma.security/Career", "name": "Alma Security"},
     {"url": "https://verix.com/careers/", "name": "Verix"}
+  ],
+  "general_search_queries": [
+    {"query": "software intern israel", "name": "Software Intern"},
+    {"query": "software student position israel", "name": "Software Student"},
+    {"query": "software engineering intern israel", "name": "Engineering Intern"},
+    {"query": "developer intern israel", "name": "Developer Intern"},
+    {"query": "data engineer student israel", "name": "Data Student"},
+    {"query": "QA intern israel", "name": "QA Intern"},
+    {"query": "devops intern israel", "name": "DevOps Intern"}
   ],
   "email": {
     "enabled": true,

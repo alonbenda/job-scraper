@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Runtime-generated local state (only used when Supabase isn't configured)
+scraper.log
+*.log
+seen_jobs.json
+last_cleanup.json
+cv_skills.json
+
+# Secrets / local env
+.env
+
+# Virtual environments
+venv/
+.venv/
+
+# Editor / tool-local config
+.vscode/
+.idea/
+.claude/
+
+# Misc local artifacts
+*.zip

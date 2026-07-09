@@ -481,6 +481,93 @@ def scrape_google_jobs(url: str, site_name: str, headless: bool = True, timeout:
     return jobs
 
 
+_SEARCH_RESULT_BLOCKLIST = (
+    "google.com", "google.co.il", "googleusercontent.com", "gstatic.com",
+    "youtube.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
+    "tiktok.com", "pinterest.com",
+)
+
+
+def _is_useful_search_result(url: str) -> bool:
+    """Filter out Google's own pages and generic social/media domains from search results."""
+    if not url:
+        return False
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return False
+    netloc = parsed.netloc.lower()
+    return not any(netloc == d or netloc.endswith("." + d) for d in _SEARCH_RESULT_BLOCKLIST)
+
+
+def _build_discovered_entries(query_name: str, links: list[str], known_domains: set) -> list[dict]:
+    """Turn raw search-result links into scrapable site entries, deduped by domain."""
+    entries = []
+    seen_domains = set()
+    for link in links:
+        domain = urlparse(link).netloc
+        if domain in known_domains or domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        entries.append({
+            "url": link,
+            "name": f"{domain} (via \"{query_name}\")",
+            "discovered": True,
+        })
+    return entries
+
+
+_CAPTCHA_MARKERS = (
+    "unusual traffic", "detected unusual traffic", "recaptcha", "/sorry/index",
+)
+
+
+def google_web_search(query: str, num_results: int = 6, headless: bool = True, timeout: int = 15) -> list[str]:
+    """Run a plain organic Google search and return useful result links (not the udm=8 Jobs vertical)."""
+    from urllib.parse import quote_plus
+
+    driver = None
+    links = []
+
+    try:
+        driver = get_driver(headless)
+        search_url = f"https://www.google.com/search?q={quote_plus(query)}&num={num_results}&hl=en&gl=il"
+        driver.get(search_url)
+        time.sleep(timeout)
+
+        page_source = driver.page_source
+        if any(marker in page_source.lower() for marker in _CAPTCHA_MARKERS):
+            logger.warning(f"  [Google Search] Blocked/CAPTCHA'd the search for '{query}'")
+            return []
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(page_source, "html.parser")
+
+        seen = set()
+        for h3 in soup.find_all("h3"):
+            a = h3.find_parent("a")
+            if not a or not a.get("href"):
+                continue
+            href = a["href"]
+            if href in seen:
+                continue
+            seen.add(href)
+            if _is_useful_search_result(href):
+                links.append(href)
+            if len(links) >= num_results:
+                break
+
+    except Exception as e:
+        logger.warning(f"  [Google Search] Error searching for '{query}': {e}")
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+    return links
+
+
 def scrape_site(url_entry: dict, config: dict) -> list[dict]:
     """Scrape a single site using the best available method."""
     url = url_entry["url"]
@@ -1289,6 +1376,40 @@ def run_scraper():
         seen_jobs = load_seen_jobs()
         seen_job_ids = set(seen_jobs.keys())
 
+    # --- General Google search: discover new sites for generic queries ---
+    if use_db:
+        general_queries = db.get_search_queries()
+    else:
+        general_queries = config.get("general_search_queries", [])
+
+    if general_queries:
+        known_domains = {urlparse(u["url"]).netloc for u in urls}
+        discovered_entries = []
+        for gq in general_queries:
+            links = google_web_search(
+                gq["query"],
+                config.get("general_search_num_results", 6),
+                config.get("headless", True),
+                config.get("page_load_timeout", 15),
+            )
+            new_entries = _build_discovered_entries(gq["name"], links, known_domains)
+            for entry in new_entries:
+                known_domains.add(urlparse(entry["url"]).netloc)
+                if use_db:
+                    db.add_discovered_site(entry["name"], entry["url"])
+                else:
+                    config["urls"].append({"url": entry["url"], "name": entry["name"]})
+            discovered_entries.extend(new_entries)
+
+        if not use_db and discovered_entries:
+            save_config(config)
+
+        urls = urls + discovered_entries
+        logger.info(
+            f"🔎 General search: {len(general_queries)} quer(y/ies) → "
+            f"{len(discovered_entries)} new site(s) discovered"
+        )
+
     logger.info("=" * 60)
     logger.info(f"Job Scraper v2 — Scanning {len(urls)} sites")
     logger.info(f"Role filter (must match ≥1): {role_keywords}")
@@ -1303,6 +1424,8 @@ def run_scraper():
     errors = 0
     failed_sites = []       # Sites that threw exceptions
     empty_sites = []        # Sites that returned 0 raw jobs (likely broken)
+    discovered_scraped = 0      # Discovered (search-result) sites scraped this run
+    discovered_with_jobs = 0    # ...of which had ≥1 raw job
     currently_live_ids = set()  # Track job IDs found in this scan
     existing_seen_ids = []  # Track IDs of jobs we've already seen
 
@@ -1333,9 +1456,14 @@ def run_scraper():
         jobs = result["jobs"]
         error = result["error"]
 
+        is_discovered = url_entry.get("discovered", False)
+
         if error:
             errors += 1
-            failed_sites.append(url_entry.get("name", url_entry["url"]))
+            if is_discovered:
+                discovered_scraped += 1
+            else:
+                failed_sites.append(url_entry.get("name", url_entry["url"]))
             logger.error(f"  ❌ [{url_entry.get('name', '?')}] Error: {error}")
             if use_db:
                 db.update_site_status(url_entry.get("name", "?"), "error", 0)
@@ -1348,8 +1476,13 @@ def run_scraper():
             status = "ok" if jobs else "empty"
             db.update_site_status(url_entry["name"], status, len(jobs))
 
-        # Track sites that returned 0 jobs
-        if len(jobs) == 0:
+        if is_discovered:
+            # Discovered (search-result) sites are speculative — most won't have
+            # matching jobs, so they don't count as "broken" like curated sites do.
+            discovered_scraped += 1
+            if jobs:
+                discovered_with_jobs += 1
+        elif len(jobs) == 0:
             empty_sites.append(url_entry.get("name", url_entry["url"]))
 
         # Filter: must match ROLE + FIELD + LOCATION
@@ -1413,6 +1546,8 @@ def run_scraper():
     logger.info("=" * 60)
     logger.info(f"SCAN COMPLETE: {total_raw} raw → {total_matching} matching → {len(all_new_jobs)} NEW")
     logger.info(f"Sites scanned: {len(urls)} | Errors: {errors} | Empty (0 jobs): {len(empty_sites)}")
+    if discovered_scraped:
+        logger.info(f"🔎 Discovered sites: {discovered_scraped} scraped, {discovered_with_jobs} had matching jobs")
     logger.info("=" * 60)
 
     # Report problematic sites

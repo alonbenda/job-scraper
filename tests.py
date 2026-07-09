@@ -8,6 +8,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+import db
+
 from job_scraper import (
     _whole_word_match,
     matches_role,
@@ -17,6 +19,8 @@ from job_scraper import (
     matches_location,
     job_id,
     extract_jobs_from_html,
+    _is_useful_search_result,
+    _build_discovered_entries,
 )
 
 
@@ -234,3 +238,137 @@ def test_no_jobs_in_html():
     html = "<html><body><p>Welcome to our site</p></body></html>"
     jobs = extract_jobs_from_html(html, "TestCompany", "https://example.com")
     assert jobs == []
+
+
+# ===========================================================================
+# General Google search: result-link filtering
+# ===========================================================================
+
+def test_company_careers_link_is_useful():
+    assert _is_useful_search_result("https://careers.example-company.com/jobs/123") is True
+
+def test_linkedin_job_link_is_useful():
+    assert _is_useful_search_result("https://www.linkedin.com/jobs/view/1234567") is True
+
+def test_google_search_link_rejected():
+    assert _is_useful_search_result("https://www.google.com/search?q=x") is False
+
+def test_google_cache_link_rejected():
+    assert _is_useful_search_result("https://webcache.googleusercontent.com/search?q=cache:x") is False
+
+def test_youtube_link_rejected():
+    assert _is_useful_search_result("https://www.youtube.com/watch?v=abc") is False
+
+def test_facebook_link_rejected():
+    assert _is_useful_search_result("https://www.facebook.com/somepage") is False
+
+def test_empty_link_rejected():
+    assert _is_useful_search_result("") is False
+
+def test_non_http_link_rejected():
+    assert _is_useful_search_result("/search?q=x") is False
+
+
+# ===========================================================================
+# General Google search: discovered-entry construction
+# ===========================================================================
+
+def test_build_discovered_entries_basic():
+    entries = _build_discovered_entries(
+        "Software Student",
+        ["https://a.com/jobs", "https://b.com/careers"],
+        set(),
+    )
+    urls = [e["url"] for e in entries]
+    assert "https://a.com/jobs" in urls
+    assert "https://b.com/careers" in urls
+    assert all(e["discovered"] is True for e in entries)
+    assert all("Software Student" in e["name"] for e in entries)
+
+def test_build_discovered_entries_dedupes_by_domain():
+    entries = _build_discovered_entries(
+        "Software Student",
+        ["https://a.com/jobs", "https://a.com/careers"],
+        set(),
+    )
+    assert len(entries) == 1
+    assert entries[0]["url"] == "https://a.com/jobs"
+
+def test_build_discovered_entries_skips_known_domains():
+    entries = _build_discovered_entries(
+        "Software Student",
+        ["https://a.com/jobs", "https://b.com/careers"],
+        {"a.com"},
+    )
+    urls = [e["url"] for e in entries]
+    assert urls == ["https://b.com/careers"]
+
+def test_build_discovered_entries_empty_links():
+    assert _build_discovered_entries("Software Student", [], set()) == []
+
+
+# ===========================================================================
+# db.py: search queries / discovered sites (mocked requests, no live network)
+# ===========================================================================
+
+class _FakeResponse:
+    def __init__(self, json_data, status_code=200):
+        self._json_data = json_data
+        self.status_code = status_code
+        self.text = ""
+
+    def json(self):
+        return self._json_data
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def test_get_search_queries_returns_rows(monkeypatch):
+    rows = [{"name": "Software Student", "query": "software student position israel"}]
+    monkeypatch.setattr(db.requests, "get", lambda *a, **k: _FakeResponse(rows))
+    result = db.get_search_queries()
+    assert result == rows
+
+def test_get_search_queries_handles_error(monkeypatch):
+    def _raise(*a, **k):
+        raise ConnectionError("boom")
+    monkeypatch.setattr(db.requests, "get", _raise)
+    assert db.get_search_queries() == []
+
+def test_add_discovered_site_posts_with_source(monkeypatch):
+    captured = {}
+    def _fake_post(url, headers=None, json=None, **k):
+        captured["url"] = url
+        captured["json"] = json
+        return _FakeResponse({}, status_code=201)
+    monkeypatch.setattr(db.requests, "post", _fake_post)
+    db.add_discovered_site("example.com", "https://example.com/careers")
+    assert captured["url"].endswith("/sites")
+    assert captured["json"]["name"] == "example.com"
+    assert captured["json"]["url"] == "https://example.com/careers"
+    assert captured["json"]["source"] == "discovered"
+
+def test_add_discovered_site_swallows_errors(monkeypatch):
+    def _raise(*a, **k):
+        raise ConnectionError("boom")
+    monkeypatch.setattr(db.requests, "post", _raise)
+    db.add_discovered_site("example.com", "https://example.com/careers")  # must not raise
+
+def test_get_all_sites_marks_discovered_flag(monkeypatch):
+    rows = [
+        {"name": "Wiz", "url": "https://www.wiz.io/careers", "source": "manual"},
+        {"name": "example.com", "url": "https://example.com/careers", "source": "discovered"},
+    ]
+    monkeypatch.setattr(db.requests, "get", lambda *a, **k: _FakeResponse(rows))
+    result = db.get_all_sites()
+    by_name = {r["name"]: r for r in result}
+    assert by_name["Wiz"]["discovered"] is False
+    assert by_name["example.com"]["discovered"] is True
+
+def test_get_all_sites_defaults_missing_source_to_manual(monkeypatch):
+    rows = [{"name": "Wiz", "url": "https://www.wiz.io/careers"}]
+    monkeypatch.setattr(db.requests, "get", lambda *a, **k: _FakeResponse(rows))
+    result = db.get_all_sites()
+    assert result[0]["discovered"] is False

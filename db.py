@@ -45,14 +45,45 @@ def get_all_sites() -> list[dict]:
         resp = requests.get(
             f"{SUPABASE_URL}/rest/v1/sites",
             headers=_headers(),
-            params={"select": "name,url", "order": "name.asc", "limit": 1000},
+            params={"select": "name,url,source", "order": "name.asc", "limit": 1000},
         )
         resp.raise_for_status()
         rows = resp.json()
-        # Convert to the format expected by scrape_site: [{"url": ..., "name": ...}]
-        return [{"url": r["url"], "name": r["name"]} for r in rows]
+        # Convert to the format expected by scrape_site: [{"url": ..., "name": ..., "discovered": ...}]
+        return [
+            {"url": r["url"], "name": r["name"], "discovered": r.get("source") == "discovered"}
+            for r in rows
+        ]
     except Exception as e:
         logger.error(f"DB: Failed to fetch sites: {e}")
+        return []
+
+
+def add_discovered_site(name: str, url: str):
+    """Insert (or update) a site discovered via general Google search."""
+    try:
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/sites",
+            headers=_headers(prefer="resolution=merge-duplicates"),
+            json={"name": name, "url": url, "source": "discovered"},
+        )
+    except Exception:
+        pass  # Non-critical, don't crash the scraper
+
+
+def get_search_queries() -> list[dict]:
+    """Fetch all general-search queries from the database."""
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/search_queries",
+            headers=_headers(),
+            params={"select": "name,query", "order": "name.asc", "limit": 1000},
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        return [{"name": r["name"], "query": r["query"]} for r in rows]
+    except Exception as e:
+        logger.error(f"DB: Failed to fetch search queries: {e}")
         return []
 
 
