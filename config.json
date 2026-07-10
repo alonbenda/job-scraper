@@ -173,7 +173,7 @@
     {"query": "devops intern israel", "name": "DevOps Intern"}
   ],
   "email": {
-    "enabled": true,
+    "enabled": false,
     "smtp_server": "smtp.gmail.com",
     "smtp_port": 587,
     "sender_email": "SENDER_EMAIL",

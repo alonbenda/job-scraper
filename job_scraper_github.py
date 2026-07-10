@@ -21,8 +21,10 @@ if sender and password and recipient:
     config["email"]["sender_email"] = sender
     config["email"]["sender_password"] = password
     config["email"]["recipient_email"] = recipient
-    config["email"]["enabled"] = True
-    print(f"✅ Email configured from GitHub Secrets → {recipient}")
+    # Credentials are wired up, but whether email actually sends is governed by
+    # config.json's "email.enabled" flag (off by default — the dashboard is the
+    # primary way to see results now; flip that flag back to true to re-enable).
+    print(f"✅ Email configured from GitHub Secrets → {recipient} (enabled={config['email']['enabled']})")
 else:
     print("⚠️ Email secrets not set!")
 
