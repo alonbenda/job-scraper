@@ -25,3 +25,10 @@ venv/
 
 # Misc local artifacts
 *.zip
+
+# OS cruft
+Thumbs.db
+.DS_Store
+
+# Personal CV (contains real name — not meant for a pushed repo)
+Alon Ben David - CV.pdf

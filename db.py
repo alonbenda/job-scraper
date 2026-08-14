@@ -265,3 +265,69 @@ def delete_stale_jobs(keep_ids: set, max_age_days: int = 30):
 
     except Exception as e:
         logger.error(f"DB: Failed to clean stale jobs: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Dashboard operations
+# ---------------------------------------------------------------------------
+
+def get_jobs(limit: int = 300) -> list[dict]:
+    """Fetch jobs for the dashboard, newest first."""
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/jobs",
+            headers=_headers(),
+            params={"select": "*", "order": "first_seen.desc", "limit": limit},
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logger.error(f"DB: Failed to fetch jobs: {e}")
+        return []
+
+
+def get_sites_status() -> list[dict]:
+    """Fetch site statuses for the dashboard."""
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/sites",
+            headers=_headers(),
+            params={
+                "select": "name,url,source,last_scraped,last_status,job_count",
+                "order": "name.asc",
+                "limit": 1000,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logger.error(f"DB: Failed to fetch site statuses: {e}")
+        return []
+
+
+def get_last_viewed() -> str | None:
+    """Fetch the timestamp the dashboard was last viewed."""
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/ui_state",
+            headers=_headers(),
+            params={"select": "last_viewed_at", "id": "eq.1"},
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        return rows[0]["last_viewed_at"] if rows else None
+    except Exception as e:
+        logger.error(f"DB: Failed to fetch last_viewed_at: {e}")
+        return None
+
+
+def set_last_viewed():
+    """Mark the dashboard as viewed right now."""
+    try:
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/ui_state",
+            headers=_headers(prefer="resolution=merge-duplicates"),
+            json={"id": 1, "last_viewed_at": datetime.now().isoformat()},
+        )
+    except Exception:
+        pass  # Non-critical, don't crash the dashboard
