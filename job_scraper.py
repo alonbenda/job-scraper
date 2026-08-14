@@ -24,7 +24,7 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qsl, urlencode
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -164,7 +164,9 @@ def extract_jobs_from_html(html: str, site_name: str, base_url: str) -> list[dic
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, "html.parser")
     jobs = []
-    seen_titles = set()
+    # Keyed on (title, link), not title alone: a company can post several
+    # distinct openings under one title, and each has its own URL.
+    seen_keys = set()
 
     # Date-related patterns for extracting posting dates
     _date_patterns = [
@@ -296,7 +298,8 @@ def extract_jobs_from_html(html: str, site_name: str, base_url: str) -> list[dic
                     link = f"{parsed.scheme}://{parsed.netloc}{link}"
 
                 # Filter: must have a reasonable title
-                if title and 5 < len(title) < 200 and title not in seen_titles:
+                key = (title, link)
+                if title and 5 < len(title) < 200 and key not in seen_keys:
                     # Skip navigation / non-job links
                     skip_words = ["blog", "about", "contact", "privacy", "terms",
                                   "login", "sign up", "cookie", "home", "menu",
@@ -304,7 +307,7 @@ def extract_jobs_from_html(html: str, site_name: str, base_url: str) -> list[dic
                                   "follow us", "powered by"]
                     if any(sw in title.lower() for sw in skip_words):
                         continue
-                    seen_titles.add(title)
+                    seen_keys.add(key)
 
                     # Extract date and location from nearby elements
                     posted_date = _find_date_near(el)
@@ -375,9 +378,15 @@ def scrape_with_selenium(url: str, site_name: str, headless: bool = True, timeou
                 try:
                     title = el.text.strip()
                     link = el.get_attribute("href") or ""
-                    if title and 10 < len(title) < 200 and title not in seen:
-                        seen.add(title)
-                        jobs.append({"title": title, "link": link, "site": site_name})
+                    if title and 10 < len(title) < 200 and (title, link) not in seen:
+                        seen.add((title, link))
+                        jobs.append({
+                            "title": title,
+                            "link": link,
+                            "site": site_name,
+                            "location": "",
+                            "posted_date": "",
+                        })
                 except Exception:
                     continue
 
@@ -437,8 +446,11 @@ def scrape_google_jobs(url: str, site_name: str, headless: bool = True, timeout:
                 date_el = el.find_elements(By.CSS_SELECTOR, ".SuWscb, .LL4CDc")
                 posted_date = date_el[0].text.strip() if date_el else ""
 
-                if title and title not in seen_titles:
-                    seen_titles.add(title)
+                # Google Jobs gives every card the same link, so company +
+                # location are all we have to tell two same-titled cards apart
+                key = (title, company, location)
+                if title and key not in seen_titles:
+                    seen_titles.add(key)
                     # Build a display name with company
                     display_site = f"{company}" if company else site_name
                     jobs.append({
@@ -459,8 +471,9 @@ def scrape_google_jobs(url: str, site_name: str, headless: bool = True, timeout:
             # Look for job title patterns in Google Jobs
             for el in soup.select("li .BjJfJf, li .sH3zFd, [role='treeitem'] div"):
                 title = el.get_text(strip=True)
-                if title and 5 < len(title) < 150 and title not in seen_titles:
-                    seen_titles.add(title)
+                # Only the title is available on this path, so dedup on it alone
+                if title and 5 < len(title) < 150 and (title, "", "") not in seen_titles:
+                    seen_titles.add((title, "", ""))
                     jobs.append({
                         "title": title,
                         "link": url,
@@ -741,9 +754,126 @@ def matches_location(job: dict, location_filters: list[str]) -> bool:
     return True
 
 
-def job_id(job: dict) -> str:
+# Query params that carry no job identity — they change between scrapes and
+# would otherwise churn the job ID. This is a blocklist on purpose: an allowlist
+# would silently drop the params that ARE the job ID on some boards
+# (gh_jid, vjk, jk, currentJobId, pid, ...).
+_TRACKING_PARAMS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "gh_src", "src", "source", "ref", "refid", "referer", "referrer",
+    "trk", "trackingid", "sessionid", "session_id",
+    "fbclid", "gclid", "mc_cid", "mc_eid", "_ga",
+}
+
+
+def _norm_text(s: str) -> str:
+    """Lowercase, collapse internal whitespace, strip."""
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+
+def canonical_link(link: str, source_url: str = "") -> str:
+    """
+    Normalize a job URL down to its stable identity, or "" if the link can't
+    identify a job. Most boards already put a unique req ID in the URL
+    (Workday _R00123, Greenhouse /jobs/456, Comeet UID, Indeed vjk=), so this
+    is the strongest signal we have for telling apart two openings that share
+    a title at the same company.
+    """
+    if not link:
+        return ""
+    try:
+        parsed = urlparse(link.strip())
+    except Exception:
+        return ""
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+
+    netloc = parsed.netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    path = parsed.path.rstrip("/")
+
+    # Sort surviving params so param order can't fork the ID
+    params = sorted(
+        (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k.lower() not in _TRACKING_PARAMS
+    )
+    query = urlencode(params)
+
+    # Keep the fragment — some boards hash-route the job ID (#/careers/job/123)
+    canon = f"{netloc}{path}"
+    if query:
+        canon += f"?{query}"
+    if parsed.fragment:
+        canon += f"#{parsed.fragment}"
+    canon = canon.lower()
+
+    # A link that just points back at the listing page identifies nothing
+    if source_url and canon == canonical_link(source_url):
+        return ""
+
+    return canon
+
+
+def job_identity(job: dict, canon: str = None) -> str:
+    """
+    Build the string that gets hashed into the job ID.
+
+    Pass canon="" to force the metadata identity — assign_job_ids() does that
+    for sites whose links turn out not to discriminate between openings.
+    """
+    if canon is None:
+        canon = canonical_link(job.get("link", ""), job.get("source_url", ""))
+    if canon:
+        return f"url|{canon}"
+    meta = "|".join(_norm_text(job.get(k, "")) for k in ("site", "title", "location"))
+    return f"meta|{meta}"
+
+
+def job_id(job: dict, canon: str = None) -> str:
+    return hashlib.md5(job_identity(job, canon).encode()).hexdigest()
+
+
+def legacy_job_id(job: dict) -> str:
+    """
+    The pre-2026-08 ID scheme (site + title only). Kept solely so the first
+    scans after the switch can migrate existing rows in place instead of
+    re-notifying the whole corpus. Safe to delete — along with the migration
+    branch in run_scraper() — once "Migrated N job IDs" stays at 0.
+    """
     raw = f"{job['site']}|{job['title']}".lower().strip()
     return hashlib.md5(raw.encode()).hexdigest()
+
+
+def assign_job_ids(jobs: list[dict], context_jobs: list[dict] = None) -> None:
+    """
+    Set job["id"] and job["legacy_id"] for a batch of jobs from one site.
+
+    Whether a link discriminates is decided per batch, not per job: a site
+    where every opening links to the same URL (Google Jobs, where link is just
+    the search page) would otherwise collapse into a single ID — worse than the
+    old scheme. The test is titles, not counts: one URL shared by two *different*
+    titles can't be identifying, while one URL repeated for the *same* title is
+    a genuine duplicate (same anchor matched by several selectors) and should
+    collapse.
+
+    context_jobs is the site's unfiltered scrape. Judging discrimination from
+    the filtered list alone would call a useless link "unique" whenever only one
+    job survives the keyword filter, and the next scan's survivor would then
+    inherit its ID.
+    """
+    titles_per_canon = {}
+    for job in (context_jobs if context_jobs is not None else jobs):
+        canon = canonical_link(job.get("link", ""), job.get("source_url", ""))
+        if canon:
+            titles_per_canon.setdefault(canon, set()).add(_norm_text(job.get("title", "")))
+
+    for job in jobs:
+        canon = canonical_link(job.get("link", ""), job.get("source_url", ""))
+        if canon and len(titles_per_canon.get(canon, ())) > 1:
+            canon = ""  # link is shared across distinct openings — not identifying
+        job["id"] = job_id(job, canon)
+        job["legacy_id"] = legacy_job_id(job)
 
 # ---------------------------------------------------------------------------
 # CV Parsing & Job Fit Scoring
@@ -1105,6 +1235,13 @@ def build_email_html(new_jobs: list[dict], config: dict,
             roles = ", ".join(job.get("matched_roles", []))
             fields = ", ".join(job.get("matched_fields", []))
             posted = job.get("posted_date", "") or "—"
+            # Shown under the company: two openings can now share a title at the
+            # same company, and location is often the only visible difference
+            location = job.get("location", "")
+            location_html = (
+                f'<div style="font-size:11px;color:#6b7280;margin-top:2px;">📍 {location}</div>'
+                if location else ""
+            )
 
             fit_html = ""
             if has_cv:
@@ -1124,7 +1261,7 @@ def build_email_html(new_jobs: list[dict], config: dict,
             rows += f"""
                 <tr>
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;">{job['title']}</td>
-                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">{job['site']}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">{job['site']}{location_html}</td>
                     {fit_html}
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;white-space:nowrap;">
                         <span style="background:#fef3c7;padding:2px 6px;border-radius:4px;font-size:11px;color:#92400e;">{posted}</span>
@@ -1428,6 +1565,8 @@ def run_scraper():
     discovered_with_jobs = 0    # ...of which had ≥1 raw job
     currently_live_ids = set()  # Track job IDs found in this scan
     existing_seen_ids = []  # Track IDs of jobs we've already seen
+    consumed_legacy_ids = set()  # Legacy IDs already claimed by a job this run
+    id_migrations = []      # (legacy_id, new_id) rows to rewrite in place
 
     # --- Parallel scraping with ThreadPoolExecutor ---
     max_workers = config.get("max_workers", 5)
@@ -1498,28 +1637,42 @@ def run_scraper():
 
         total_matching += len(matching)
 
-        # Track all currently live job IDs (for cleanup)
+        # Assign IDs for the whole batch at once — link discrimination is a
+        # per-site property (see assign_job_ids)
+        assign_job_ids(matching, context_jobs=jobs)
         for job in matching:
-            jid = job_id(job)
-            job["id"] = jid  # Store ID on the job dict
-            currently_live_ids.add(jid)
+            currently_live_ids.add(job["id"])
+            # Keep legacy rows alive too until they've been migrated
+            currently_live_ids.add(job["legacy_id"])
 
         # Find new jobs (not seen before)
         new_jobs = []
         for job in matching:
-            jid = job["id"]
-            if jid not in seen_job_ids:
+            jid, lid = job["id"], job["legacy_id"]
+            if jid in seen_job_ids:
+                existing_seen_ids.append(jid)
+            elif lid in seen_job_ids and lid not in consumed_legacy_ids:
+                # A legacy row stands for exactly ONE opening. The first job to
+                # claim it inherits it; any sibling sharing that title+company
+                # is genuinely new and must still be notified.
+                consumed_legacy_ids.add(lid)
+                id_migrations.append((lid, jid))
+                seen_job_ids.add(jid)
+                existing_seen_ids.append(jid)
+            else:
                 new_jobs.append(job)
                 seen_job_ids.add(jid)  # Prevent duplicates within same scan
-            else:
-                existing_seen_ids.append(jid)
 
             # Update local seen_jobs dict if using files
             if not use_db:
+                if lid in seen_jobs and jid not in seen_jobs:
+                    seen_jobs[jid] = seen_jobs.pop(lid)  # preserves first_seen
                 if jid not in seen_jobs:
                     seen_jobs[jid] = {
                         "title": job["title"],
                         "site": job["site"],
+                        "link": job.get("link", ""),
+                        "location": job.get("location", ""),
                         "first_seen": datetime.now().isoformat(),
                         "last_seen": datetime.now().isoformat(),
                     }
@@ -1532,8 +1685,12 @@ def run_scraper():
         else:
             logger.info(f"  [{url_entry.get('name')}] {len(matching)} matching, 0 new")
 
+    if id_migrations:
+        logger.info(f"🔀 Migrated {len(id_migrations)} job ID(s) to the new scheme")
+
     # Save data
     if use_db:
+        db.migrate_job_ids(id_migrations)  # must run before save_new_jobs
         db.save_new_jobs(all_new_jobs)
         db.update_last_seen(existing_seen_ids)
         db.delete_stale_jobs(currently_live_ids)

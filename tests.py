@@ -18,6 +18,9 @@ from job_scraper import (
     matches_job,
     matches_location,
     job_id,
+    legacy_job_id,
+    canonical_link,
+    assign_job_ids,
     extract_jobs_from_html,
     _is_useful_search_result,
     _build_discovered_entries,
@@ -219,6 +222,125 @@ def test_different_site_different_id():
     job2 = {"site": "Meta", "title": "Software Intern"}
     assert job_id(job1) != job_id(job2)
 
+def test_same_title_same_company_different_link_different_id():
+    """Two distinct reqs with an identical title must not collide."""
+    job1 = {"site": "Intel", "title": "Student Software Engineer",
+            "link": "https://intel.wd1.myworkdayjobs.com/jobs/_R00123"}
+    job2 = {"site": "Intel", "title": "Student Software Engineer",
+            "link": "https://intel.wd1.myworkdayjobs.com/jobs/_R00456"}
+    assert job_id(job1) != job_id(job2)
+
+def test_whitespace_variation_same_id():
+    job1 = {"site": "Google", "title": "Software  Intern "}
+    job2 = {"site": "Google", "title": "Software Intern"}
+    assert job_id(job1) == job_id(job2)
+
+
+# ===========================================================================
+# Link canonicalization
+# ===========================================================================
+
+def test_tracking_params_stripped():
+    a = canonical_link("https://boards.greenhouse.io/acme/jobs/456?utm_source=email&gh_src=x")
+    b = canonical_link("https://boards.greenhouse.io/acme/jobs/456")
+    assert a == b
+
+def test_job_id_params_preserved():
+    a = canonical_link("https://il.indeed.com/viewjob?vjk=abc123")
+    b = canonical_link("https://il.indeed.com/viewjob?vjk=def456")
+    assert a != b
+
+def test_www_and_trailing_slash_normalized():
+    a = canonical_link("https://www.Example.com/jobs/12/")
+    b = canonical_link("https://example.com/jobs/12")
+    assert a == b
+
+def test_param_order_irrelevant():
+    a = canonical_link("https://example.com/j?b=2&a=1")
+    b = canonical_link("https://example.com/j?a=1&b=2")
+    assert a == b
+
+def test_fragment_kept_for_hash_routing():
+    a = canonical_link("https://example.com/careers#/job/123")
+    b = canonical_link("https://example.com/careers#/job/456")
+    assert a != b
+
+def test_link_equal_to_source_url_is_not_identifying():
+    url = "https://example.com/careers"
+    assert canonical_link(url, url) == ""
+
+def test_empty_and_non_http_links_rejected():
+    assert canonical_link("") == ""
+    assert canonical_link("javascript:void(0)") == ""
+    assert canonical_link("mailto:jobs@example.com") == ""
+
+
+# ===========================================================================
+# Batch ID assignment
+# ===========================================================================
+
+def test_batch_same_link_different_titles_falls_back_to_metadata():
+    """Google Jobs style: every card shares the search URL."""
+    search = "https://www.google.com/search?q=jobs&udm=8"
+    jobs = [
+        {"site": "Wiz", "title": "Backend Engineer", "link": search, "location": "Tel Aviv"},
+        {"site": "Wiz", "title": "Frontend Engineer", "link": search, "location": "Tel Aviv"},
+    ]
+    assign_job_ids(jobs)
+    assert jobs[0]["id"] != jobs[1]["id"]
+
+def test_batch_useless_links_still_separate_by_location():
+    search = "https://www.google.com/search?q=jobs&udm=8"
+    jobs = [
+        {"site": "Wiz", "title": "Backend Engineer", "link": search, "location": "Tel Aviv"},
+        {"site": "Wiz", "title": "Backend Engineer", "link": search, "location": "Haifa"},
+        {"site": "Wiz", "title": "Data Engineer", "link": search, "location": "Haifa"},
+    ]
+    assign_job_ids(jobs)
+    assert len({j["id"] for j in jobs}) == 3
+
+def test_batch_same_title_same_link_collapses():
+    """One anchor matched by several selectors is a real duplicate."""
+    jobs = [
+        {"site": "Acme", "title": "SW Intern", "link": "https://acme.com/jobs/1"},
+        {"site": "Acme", "title": "SW Intern", "link": "https://acme.com/jobs/1?utm_source=x"},
+    ]
+    assign_job_ids(jobs)
+    assert jobs[0]["id"] == jobs[1]["id"]
+
+def test_batch_distinct_links_stay_distinct():
+    jobs = [
+        {"site": "Acme", "title": "SW Intern", "link": "https://acme.com/jobs/1"},
+        {"site": "Acme", "title": "SW Intern", "link": "https://acme.com/jobs/2"},
+    ]
+    assign_job_ids(jobs)
+    assert jobs[0]["id"] != jobs[1]["id"]
+
+def test_context_jobs_expose_useless_link_when_one_job_matches():
+    """A useless link must not look unique just because the filter kept one job."""
+    listing = "https://acme.com/all-jobs"
+    raw = [
+        {"site": "Acme", "title": "SW Intern", "link": listing, "location": "Tel Aviv"},
+        {"site": "Acme", "title": "VP Sales", "link": listing, "location": "Tel Aviv"},
+    ]
+    matching = [raw[0]]
+    assign_job_ids(matching, context_jobs=raw)
+    # Fell back to metadata rather than hashing the shared listing URL
+    assert matching[0]["id"] == job_id({"site": "Acme", "title": "SW Intern",
+                                        "location": "Tel Aviv"}, "")
+
+def test_batch_sets_legacy_id():
+    jobs = [{"site": "Acme", "title": "SW Intern", "link": "https://acme.com/jobs/1"}]
+    assign_job_ids(jobs)
+    assert jobs[0]["legacy_id"] == legacy_job_id(jobs[0])
+
+def test_legacy_job_id_pins_old_scheme():
+    """Pins the migration path — must stay byte-identical to the old formula."""
+    import hashlib
+    job = {"site": "Google", "title": "Software Intern"}
+    expected = hashlib.md5("google|software intern".encode()).hexdigest()
+    assert legacy_job_id(job) == expected
+
 
 # ===========================================================================
 # HTML extraction
@@ -229,6 +351,22 @@ def test_extract_from_link_tags():
     jobs = extract_jobs_from_html(html, "TestCompany", "https://example.com")
     titles = [j["title"] for j in jobs]
     assert any("Software Engineering Intern" in t for t in titles)
+
+def test_extract_keeps_same_title_with_different_hrefs():
+    """Page-level dedup must not swallow two distinct reqs sharing a title."""
+    html = ('<html><body>'
+            '<a href="/jobs/123">Software Engineering Intern</a>'
+            '<a href="/jobs/456">Software Engineering Intern</a>'
+            '</body></html>')
+    jobs = extract_jobs_from_html(html, "TestCompany", "https://example.com")
+    links = {j["link"] for j in jobs if j["title"] == "Software Engineering Intern"}
+    assert links == {"https://example.com/jobs/123", "https://example.com/jobs/456"}
+
+def test_extract_collapses_identical_title_and_href():
+    """The same anchor matched by several selectors is still one job."""
+    html = '<html><body><h3><a href="/jobs/123">Software Engineering Intern</a></h3></body></html>'
+    jobs = extract_jobs_from_html(html, "TestCompany", "https://example.com")
+    assert len([j for j in jobs if j["title"] == "Software Engineering Intern"]) == 1
 
 def test_empty_html_returns_empty():
     jobs = extract_jobs_from_html("", "TestCompany", "https://example.com")
