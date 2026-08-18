@@ -28,6 +28,8 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, parse_qsl, urlencode
 
+from job_store import get_store
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -35,7 +37,6 @@ from urllib.parse import urlparse, parse_qsl, urlencode
 SCRIPT_DIR = Path(__file__).parent
 CONFIG_FILE = SCRIPT_DIR / "config.json"
 SEEN_JOBS_FILE = SCRIPT_DIR / "seen_jobs.json"
-LAST_CLEANUP_FILE = SCRIPT_DIR / "last_cleanup.json"
 CV_FILE = SCRIPT_DIR / "cv_skills.json"  # Cached parsed CV skills
 LOG_FILE = SCRIPT_DIR / "scraper.log"
 
@@ -70,17 +71,6 @@ def save_config(config: dict):
         json.dump(config, f, indent=2, ensure_ascii=False)
     logger.info(f"Config saved to {CONFIG_FILE}")
 
-
-def load_seen_jobs() -> dict:
-    if SEEN_JOBS_FILE.exists():
-        with open(SEEN_JOBS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-
-def save_seen_jobs(seen: dict):
-    with open(SEEN_JOBS_FILE, "w", encoding="utf-8") as f:
-        json.dump(seen, f, indent=2, ensure_ascii=False)
 
 def send_email(config: dict, subject: str, body_html: str):
     """
@@ -1480,66 +1470,6 @@ def build_email_html(new_jobs: list[dict], config: dict,
     """
 
 # ---------------------------------------------------------------------------
-# Stale job cleanup (once per day)
-# ---------------------------------------------------------------------------
-
-def should_run_cleanup(interval_hours: int = 24) -> bool:
-    """Check if enough time has passed since last cleanup."""
-    if not LAST_CLEANUP_FILE.exists():
-        return True
-    try:
-        with open(LAST_CLEANUP_FILE, "r") as f:
-            data = json.load(f)
-        last_run = datetime.fromisoformat(data.get("last_cleanup", "2000-01-01"))
-        hours_since = (datetime.now() - last_run).total_seconds() / 3600
-        return hours_since >= interval_hours
-    except Exception:
-        return True
-
-
-def save_cleanup_timestamp():
-    with open(LAST_CLEANUP_FILE, "w") as f:
-        json.dump({"last_cleanup": datetime.now().isoformat()}, f)
-
-
-def cleanup_stale_jobs(seen_jobs: dict, currently_live_ids: set, config: dict):
-    """
-    Remove jobs from seen_jobs that are no longer found on any career page.
-    Only runs once per day (controlled by cleanup_interval_hours).
-    This prevents re-notifying about jobs that reappear, while keeping
-    memory clean of jobs that have been filled/removed.
-    """
-    interval = config.get("cleanup_interval_hours", 24)
-    if not should_run_cleanup(interval):
-        return
-
-    logger.info("🧹 Running daily stale job cleanup...")
-
-    if not currently_live_ids:
-        logger.info("  No live jobs found this scan — skipping cleanup to avoid false purge.")
-        save_cleanup_timestamp()
-        return
-
-    stale_ids = []
-    for jid, info in list(seen_jobs.items()):
-        if jid not in currently_live_ids:
-            stale_ids.append(jid)
-
-    if stale_ids:
-        for jid in stale_ids:
-            title = seen_jobs[jid].get("title", "?")
-            site = seen_jobs[jid].get("site", "?")
-            logger.info(f"  🗑️ Removing stale: {title} @ {site}")
-            del seen_jobs[jid]
-        save_seen_jobs(seen_jobs)
-        logger.info(f"  Cleaned up {len(stale_ids)} stale job(s). {len(seen_jobs)} remaining.")
-    else:
-        logger.info("  No stale jobs to clean up.")
-
-    save_cleanup_timestamp()
-
-
-# ---------------------------------------------------------------------------
 # Main logic
 # ---------------------------------------------------------------------------
 
@@ -1550,31 +1480,16 @@ def run_scraper():
     exclude_keywords = config.get("exclude_keywords", [])
     location_filters = config.get("location_filter", [])
 
-    # Decide data source: Supabase or local files
-    try:
-        import db
-        use_db = db.is_configured()
-    except ImportError:
-        use_db = False
-
-    if use_db:
-        logger.info("📦 Using Supabase database")
-        urls = db.get_all_sites()
-        seen_job_ids = db.get_seen_job_ids()
-        if not urls:
-            logger.error("No sites found in database! Run migrate_to_supabase.py first.")
-            return []
-    else:
-        logger.info("📁 Using local files")
-        urls = config["urls"]
-        seen_jobs = load_seen_jobs()
-        seen_job_ids = set(seen_jobs.keys())
+    store = get_store(config)
+    logger.info(store.backend_name)
+    urls = store.get_all_sites()
+    seen_job_ids = store.get_seen_job_ids()
+    if not urls:
+        logger.error("No sites configured! Check config.json's \"urls\", or run migrate_to_supabase.py.")
+        return []
 
     # --- General Google search: discover new sites for generic queries ---
-    if use_db:
-        general_queries = db.get_search_queries()
-    else:
-        general_queries = config.get("general_search_queries", [])
+    general_queries = store.get_search_queries()
 
     if general_queries:
         known_domains = {urlparse(u["url"]).netloc for u in urls}
@@ -1589,14 +1504,8 @@ def run_scraper():
             new_entries = _build_discovered_entries(gq["name"], links, known_domains)
             for entry in new_entries:
                 known_domains.add(urlparse(entry["url"]).netloc)
-                if use_db:
-                    db.add_discovered_site(entry["name"], entry["url"])
-                else:
-                    config["urls"].append({"url": entry["url"], "name": entry["name"]})
+                store.add_discovered_site(entry["name"], entry["url"])
             discovered_entries.extend(new_entries)
-
-        if not use_db and discovered_entries:
-            save_config(config)
 
         urls = urls + discovered_entries
         logger.info(
@@ -1665,16 +1574,14 @@ def run_scraper():
             else:
                 failed_sites.append(url_entry.get("name", url_entry["url"]))
             logger.error(f"  ❌ [{url_entry.get('name', '?')}] Error: {error}")
-            if use_db:
-                db.update_site_status(url_entry.get("name", "?"), "error", 0)
+            store.update_site_status(url_entry.get("name", "?"), "error", 0)
             continue
 
         total_raw += len(jobs)
 
-        # Update site status in DB
-        if use_db:
-            status = "ok" if jobs else "empty"
-            db.update_site_status(url_entry["name"], status, len(jobs))
+        # Update site status
+        status = "ok" if jobs else "empty"
+        store.update_site_status(url_entry["name"], status, len(jobs))
 
         if is_discovered:
             # Discovered (search-result) sites are speculative — most won't have
@@ -1724,22 +1631,6 @@ def run_scraper():
                 new_jobs.append(job)
                 seen_job_ids.add(jid)  # Prevent duplicates within same scan
 
-            # Update local seen_jobs dict if using files
-            if not use_db:
-                if lid in seen_jobs and jid not in seen_jobs:
-                    seen_jobs[jid] = seen_jobs.pop(lid)  # preserves first_seen
-                if jid not in seen_jobs:
-                    seen_jobs[jid] = {
-                        "title": job["title"],
-                        "site": job["site"],
-                        "link": job.get("link", ""),
-                        "location": job.get("location", ""),
-                        "first_seen": datetime.now().isoformat(),
-                        "last_seen": datetime.now().isoformat(),
-                    }
-                else:
-                    seen_jobs[jid]["last_seen"] = datetime.now().isoformat()
-
         if new_jobs:
             logger.info(f"  ✅ [{url_entry.get('name')}] {len(new_jobs)} NEW matching job(s)")
             all_new_jobs.extend(new_jobs)
@@ -1750,15 +1641,10 @@ def run_scraper():
         logger.info(f"🔀 Migrated {len(id_migrations)} job ID(s) to the new scheme")
 
     # Save data
-    if use_db:
-        db.migrate_job_ids(id_migrations)  # must run before save_new_jobs
-        db.save_new_jobs(all_new_jobs)
-        db.update_last_seen(existing_seen_ids)
-        db.delete_stale_jobs(currently_live_ids)
-    else:
-        save_seen_jobs(seen_jobs)
-        if config.get("cleanup_stale_jobs", True):
-            cleanup_stale_jobs(seen_jobs, currently_live_ids, config)
+    store.migrate_job_ids(id_migrations)  # must run before save_new_jobs
+    store.save_new_jobs(all_new_jobs)
+    store.update_last_seen(existing_seen_ids)
+    store.delete_stale_jobs(currently_live_ids)
 
     # Summary
     logger.info("=" * 60)

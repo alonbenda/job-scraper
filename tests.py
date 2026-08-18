@@ -9,6 +9,8 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 import db
+import job_store
+from job_store import LocalFileJobStore
 
 from job_scraper import (
     _whole_word_match,
@@ -510,3 +512,125 @@ def test_get_all_sites_defaults_missing_source_to_manual(monkeypatch):
     monkeypatch.setattr(db.requests, "get", lambda *a, **k: _FakeResponse(rows))
     result = db.get_all_sites()
     assert result[0]["discovered"] is False
+
+
+# ===========================================================================
+# LocalFileJobStore (job_store.py) — isolated from real seen_jobs.json/config.json
+# ===========================================================================
+
+def _make_store(tmp_path, monkeypatch, config=None):
+    monkeypatch.setattr(job_store, "SEEN_JOBS_FILE", tmp_path / "seen_jobs.json")
+    monkeypatch.setattr(job_store, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(job_store, "LAST_CLEANUP_FILE", tmp_path / "last_cleanup.json")
+    return LocalFileJobStore(config if config is not None else {"urls": []})
+
+
+def test_local_store_starts_with_no_seen_jobs(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    assert store.get_seen_job_ids() == set()
+
+def test_local_store_save_new_jobs_creates_entry(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    job = {"id": "abc123", "title": "SW Intern", "site": "Acme",
+           "link": "https://acme.com/jobs/1", "location": "Tel Aviv"}
+    store.save_new_jobs([job])
+    assert store.get_seen_job_ids() == {"abc123"}
+    saved = job_store.json.load(open(job_store.SEEN_JOBS_FILE, encoding="utf-8"))
+    assert saved["abc123"]["title"] == "SW Intern"
+    assert saved["abc123"]["site"] == "Acme"
+    assert saved["abc123"]["first_seen"] == saved["abc123"]["last_seen"]
+
+def test_local_store_save_new_jobs_does_not_overwrite_existing(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    job = {"id": "abc123", "title": "SW Intern", "site": "Acme"}
+    store.save_new_jobs([job])
+    first_seen = store._seen_jobs["abc123"]["first_seen"]
+    store.save_new_jobs([job])  # re-save same id — must not reset first_seen
+    assert store._seen_jobs["abc123"]["first_seen"] == first_seen
+
+def test_local_store_update_last_seen_bumps_existing_only(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    store.save_new_jobs([{"id": "abc123", "title": "SW Intern", "site": "Acme"}])
+    old_last_seen = store._seen_jobs["abc123"]["last_seen"]
+    store.update_last_seen(["abc123", "unknown-id"])  # unknown id must be ignored, not raise
+    assert "unknown-id" not in store._seen_jobs
+    # ISO timestamps sort lexicographically — the bump must not go backwards
+    assert store._seen_jobs["abc123"]["last_seen"] >= old_last_seen
+
+def test_local_store_migrate_job_ids_renames_preserving_first_seen(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    store.save_new_jobs([{"id": "legacy-id", "title": "SW Intern", "site": "Acme"}])
+    first_seen = store._seen_jobs["legacy-id"]["first_seen"]
+    store.migrate_job_ids([("legacy-id", "new-id")])
+    assert "legacy-id" not in store._seen_jobs
+    assert store._seen_jobs["new-id"]["first_seen"] == first_seen
+
+def test_local_store_migrate_job_ids_skips_if_new_id_already_present(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    store.save_new_jobs([
+        {"id": "legacy-id", "title": "Old", "site": "Acme"},
+        {"id": "new-id", "title": "New", "site": "Acme"},
+    ])
+    store.migrate_job_ids([("legacy-id", "new-id")])
+    # new-id must keep its own data, not get clobbered by the legacy row
+    assert store._seen_jobs["new-id"]["title"] == "New"
+    assert "legacy-id" in store._seen_jobs  # left alone since the target was taken
+
+def test_local_store_get_all_sites_marks_discovered_flag():
+    config = {"urls": [
+        {"url": "https://wiz.io/careers", "name": "Wiz"},
+        {"url": "https://found.com/jobs", "name": "found.com", "source": "discovered"},
+    ]}
+    store = LocalFileJobStore(config)
+    by_name = {s["name"]: s for s in store.get_all_sites()}
+    assert by_name["Wiz"]["discovered"] is False
+    assert by_name["found.com"]["discovered"] is True
+
+def test_local_store_add_discovered_site_persists_with_source(tmp_path, monkeypatch):
+    config = {"urls": []}
+    store = _make_store(tmp_path, monkeypatch, config)
+    store.add_discovered_site("found.com", "https://found.com/jobs")
+    assert config["urls"][0]["source"] == "discovered"
+    saved = job_store.json.load(open(job_store.CONFIG_FILE, encoding="utf-8"))
+    assert saved["urls"][0]["name"] == "found.com"
+
+def test_local_store_get_search_queries_reads_from_config():
+    config = {"urls": [], "general_search_queries": [{"name": "Intern", "query": "software intern israel"}]}
+    store = LocalFileJobStore(config)
+    assert store.get_search_queries() == [{"name": "Intern", "query": "software intern israel"}]
+
+def test_local_store_update_site_status_is_a_noop(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    store.update_site_status("Acme", "ok", 5)  # must not raise — local mode tracks nothing here
+
+def test_local_store_delete_stale_jobs_respects_disabled_toggle(tmp_path, monkeypatch):
+    config = {"urls": [], "cleanup_stale_jobs": False}
+    store = _make_store(tmp_path, monkeypatch, config)
+    store.save_new_jobs([{"id": "abc", "title": "SW Intern", "site": "Acme"}])
+    store.delete_stale_jobs(keep_ids=set())  # would purge everything if enabled
+    assert "abc" in store._seen_jobs
+
+def test_local_store_delete_stale_jobs_purges_when_enabled(tmp_path, monkeypatch):
+    config = {"urls": [], "cleanup_stale_jobs": True}
+    store = _make_store(tmp_path, monkeypatch, config)
+    store.save_new_jobs([
+        {"id": "keep-me", "title": "Still open", "site": "Acme"},
+        {"id": "stale-one", "title": "Filled", "site": "Acme"},
+    ])
+    store.delete_stale_jobs(keep_ids={"keep-me"})
+    assert "keep-me" in store._seen_jobs
+    assert "stale-one" not in store._seen_jobs
+
+def test_local_store_delete_stale_jobs_skips_if_run_recently(tmp_path, monkeypatch):
+    config = {"urls": [], "cleanup_stale_jobs": True}
+    store = _make_store(tmp_path, monkeypatch, config)
+    store.save_new_jobs([
+        {"id": "keep-me", "title": "Still open", "site": "Acme"},
+        {"id": "stale-one", "title": "Filled", "site": "Acme"},
+    ])
+    store.delete_stale_jobs(keep_ids={"keep-me"})  # first call: runs, purges, writes the timestamp
+    assert "stale-one" not in store._seen_jobs
+
+    store.save_new_jobs([{"id": "stale-two", "title": "Also filled", "site": "Acme"}])
+    store.delete_stale_jobs(keep_ids={"keep-me"})  # second call, same day: gated, must not purge
+    assert "stale-two" in store._seen_jobs
