@@ -19,6 +19,8 @@ import argparse
 import smtplib
 import hashlib
 import re
+import threading
+import atexit
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -107,10 +109,13 @@ def send_email(config: dict, subject: str, body_html: str):
 # Selenium driver
 # ---------------------------------------------------------------------------
 
-_driver_pool = []
+_thread_local = threading.local()
+_driver_registry = []
+_driver_registry_lock = threading.Lock()
 
 
-def get_driver(headless: bool = True):
+def _launch_driver(headless: bool = True):
+    """Launch a brand-new Chrome WebDriver instance."""
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
@@ -140,6 +145,62 @@ def get_driver(headless: bool = True):
 
     driver.set_page_load_timeout(30)
     return driver
+
+
+def _discard_driver(driver):
+    """Kill a driver and drop it from the pool — used when it's found dead."""
+    _thread_local.driver = None
+    try:
+        driver.quit()
+    except Exception:
+        pass
+    with _driver_registry_lock:
+        if driver in _driver_registry:
+            _driver_registry.remove(driver)
+
+
+def get_driver(headless: bool = True):
+    """
+    Return this thread's pooled WebDriver, launching one on first use and
+    reusing it for every subsequent call on the same thread. Chrome startup
+    costs seconds; a scan touches 90+ sites across a handful of worker
+    threads, so one browser per thread instead of one per site saves most
+    of that cost.
+
+    Selenium sessions aren't safe to share across threads, so the pool is
+    strictly per-thread (via threading.local) — nothing here needs locking
+    except the registry used to close every driver at the end of a run.
+    """
+    driver = getattr(_thread_local, "driver", None)
+    if driver is not None:
+        try:
+            _ = driver.current_url  # cheap liveness check — raises if the session died
+            return driver
+        except Exception:
+            _discard_driver(driver)
+
+    driver = _launch_driver(headless)
+    _thread_local.driver = driver
+    with _driver_registry_lock:
+        _driver_registry.append(driver)
+    return driver
+
+
+def quit_all_drivers():
+    """Close every pooled driver. Call once the parallel scraping phase is done."""
+    with _driver_registry_lock:
+        drivers, _driver_registry[:] = list(_driver_registry), []
+    for driver in drivers:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+
+# Each run is its own `python job_scraper.py` process, so a plain atexit hook
+# is enough to catch drivers left behind by a crash mid-scan — no need to
+# thread a try/finally through run_scraper() for the same guarantee.
+atexit.register(quit_all_drivers)
 
 # ---------------------------------------------------------------------------
 # Scraping strategies
@@ -392,12 +453,6 @@ def scrape_with_selenium(url: str, site_name: str, headless: bool = True, timeou
 
     except Exception as e:
         logger.warning(f"  [{site_name}] Selenium error: {e}")
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
 
     return jobs
 
@@ -484,12 +539,6 @@ def scrape_google_jobs(url: str, site_name: str, headless: bool = True, timeout:
 
     except Exception as e:
         logger.warning(f"  [{site_name}] Google Jobs scraping error: {e}")
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
 
     return jobs
 
@@ -571,12 +620,6 @@ def google_web_search(query: str, num_results: int = 6, headless: bool = True, t
 
     except Exception as e:
         logger.warning(f"  [Google Search] Error searching for '{query}': {e}")
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
 
     return links
 
@@ -1588,6 +1631,10 @@ def run_scraper():
         futures = {executor.submit(_scrape_one, entry): entry for entry in urls}
         for future in as_completed(futures):
             scrape_results.append(future.result())
+
+    # Scraping (and the general-search phase before it) is done — close every
+    # pooled browser now rather than leaving them idle for the rest of the run.
+    quit_all_drivers()
 
     # --- Process results sequentially ---
     for result in scrape_results:
