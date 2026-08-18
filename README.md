@@ -26,9 +26,7 @@ Either run the setup wizard:
 ```bash
 python job_scraper.py --setup
 ```
-Or edit `config.json` directly — keywords, `location_filter`, `cv_path`, and (optionally) `email` credentials (Gmail App Password: https://myaccount.google.com/apppasswords).
-
-For Supabase (shared between local runs and GitHub Actions), set `SUPABASE_URL` / `SUPABASE_KEY` as environment variables — without them the scraper falls back to local files (`config.json`'s `urls`, `seen_jobs.json`).
+Or edit `config.json` directly — keywords, `location_filter`, `cv_path`, etc. `config.json` never holds secrets: Supabase (`SUPABASE_URL` / `SUPABASE_KEY`) and email (`SENDER_EMAIL` / `SENDER_PASSWORD` / `RECIPIENT_EMAIL`, only needed if `email.enabled` is `true`) are read from environment variables only. Without Supabase configured, the scraper falls back to local files (`config.json`'s `urls`, `seen_jobs.json`).
 
 ### 3. Run
 ```bash
@@ -43,7 +41,7 @@ python job_scraper.py --reset      # Clear history, rescan everything
 Right-click `setup_scheduler.bat` → **Run as Administrator** (runs every 60 min). `run_scraper.bat` / `run_dashboard.bat` are double-click launchers for manual runs.
 
 ### 5. Cloud runs (GitHub Actions)
-`.github/workflows/scraper.yml` runs `job_scraper_github.py` daily via cron, pulling email/Supabase credentials from GitHub Secrets. It writes into the same Supabase project as local runs.
+`.github/workflows/scraper.yml` runs `job_scraper.py` directly, daily via cron. Email/Supabase credentials come from GitHub Secrets as environment variables — same mechanism as a local run, no CI-specific wrapper or config mutation involved. It writes into the same Supabase project as local runs.
 
 ## Customization
 
@@ -51,7 +49,7 @@ Edit `config.json`:
 - **role_keywords / field_keywords / exclude_keywords**: what counts as a match
 - **location_filter**: `["israel", "tel aviv", "herzliya", ...]`
 - **urls / general_search_queries**: fallback site list (ignored once Supabase is configured — sites and search queries then come from the DB)
-- **email.enabled**: `false` by default — the dashboard is the primary way to see results
+- **email.enabled**: `false` by default — the dashboard is the primary way to see results. To turn it on, also set `SENDER_EMAIL` / `SENDER_PASSWORD` / `RECIPIENT_EMAIL` as environment variables (never in `config.json`)
 - **headless**: `false` to watch the browser (debugging)
 
 ## Files
@@ -61,8 +59,7 @@ Edit `config.json`:
 | `dashboard.py` | Local Flask dashboard — jobs table, site status, filters |
 | `templates/dashboard.html` | Dashboard UI |
 | `db.py` | Supabase REST client (sites, jobs, search queries, dashboard reads) |
-| `config.json` | All settings (site list, keywords, email) |
-| `job_scraper_github.py` | GitHub Actions entry point (wires up Secrets, then runs `job_scraper.py`) |
+| `config.json` | All non-secret settings (site list, keywords, email on/off) |
 | `setup_scheduler.bat` | Windows scheduler setup |
 | `run_scraper.bat` / `run_dashboard.bat` | Manual local launchers |
 | `requirements.txt` | Python dependencies |

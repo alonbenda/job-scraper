@@ -175,10 +175,7 @@
   "email": {
     "enabled": false,
     "smtp_server": "smtp.gmail.com",
-    "smtp_port": 587,
-    "sender_email": "SENDER_EMAIL",
-    "sender_password": "SENDER_PASSWORD",
-    "recipient_email": "RECIPIENT_EMAIL"
+    "smtp_port": 587
   },
   "schedule_interval_minutes": 60,
   "headless": true,

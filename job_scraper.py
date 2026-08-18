@@ -83,15 +83,29 @@ def save_seen_jobs(seen: dict):
         json.dump(seen, f, indent=2, ensure_ascii=False)
 
 def send_email(config: dict, subject: str, body_html: str):
+    """
+    Send an email via SMTP. Credentials come only from environment variables
+    (SENDER_EMAIL, SENDER_PASSWORD, RECIPIENT_EMAIL) — never from config.json —
+    so nothing secret ever gets written to disk or committed. config.json only
+    supplies the non-secret bits (enabled, smtp_server, smtp_port).
+    """
     email_cfg = config["email"]
     if not email_cfg.get("enabled"):
         logger.info("Email disabled – skipping.")
         return
 
+    sender_email = os.environ.get("SENDER_EMAIL", "")
+    sender_password = os.environ.get("SENDER_PASSWORD", "")
+    recipient_email = os.environ.get("RECIPIENT_EMAIL", "")
+    if not (sender_email and sender_password and recipient_email):
+        logger.warning("Email enabled but SENDER_EMAIL/SENDER_PASSWORD/RECIPIENT_EMAIL "
+                        "are not all set as environment variables – skipping.")
+        return
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = email_cfg["sender_email"]
-    msg["To"] = email_cfg["recipient_email"]
+    msg["From"] = sender_email
+    msg["To"] = recipient_email
     msg.attach(MIMEText(body_html, "html"))
 
     try:
@@ -99,9 +113,9 @@ def send_email(config: dict, subject: str, body_html: str):
             server.ehlo()
             server.starttls()
             server.ehlo()
-            server.login(email_cfg["sender_email"], email_cfg["sender_password"])
-            server.sendmail(email_cfg["sender_email"], email_cfg["recipient_email"], msg.as_string())
-        logger.info(f"Email sent to {email_cfg['recipient_email']}")
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+        logger.info(f"Email sent to {recipient_email}")
     except Exception as e:
         logger.error(f"Failed to send email: {e}")
 
@@ -1804,13 +1818,12 @@ def setup_wizard():
 
     # Email
     print("\n--- Email Setup ---")
-    print("For Gmail: use an App Password (https://myaccount.google.com/apppasswords)\n")
-    config["email"]["sender_email"] = input(f"Sender email [{config['email'].get('sender_email', '')}]: ").strip() or config["email"]["sender_email"]
-    pw = input("App password (hidden): ").strip()
-    if pw:
-        config["email"]["sender_password"] = pw
-    config["email"]["recipient_email"] = input(f"Recipient email [{config['email'].get('recipient_email', '')}]: ").strip() or config["email"]["recipient_email"]
-    config["email"]["enabled"] = bool(config["email"]["sender_email"] and config["email"]["sender_password"])
+    print("Email credentials are never stored in config.json — set them as environment")
+    print("variables instead, then flip \"email.enabled\" to true in config.json:")
+    print("  SENDER_EMAIL, SENDER_PASSWORD (Gmail App Password: https://myaccount.google.com/apppasswords), RECIPIENT_EMAIL")
+    enable_input = input(f"Enable email now? [{'y' if config['email'].get('enabled') else 'n'}]: ").strip().lower()
+    if enable_input:
+        config["email"]["enabled"] = enable_input in ("y", "yes")
 
     save_config(config)
     print(f"\n✅ Configuration saved! {len(config['urls'])} sites configured.")
