@@ -1810,11 +1810,16 @@ def setup_wizard():
 
     config = load_config()
 
-    # Keywords
-    print(f"Current keywords: {config['keywords']}")
-    kw_input = input("Enter keywords (comma-separated) or press Enter to keep:\n> ").strip()
+    # Keywords — a job must match at least one of each list to be kept
+    print(f"Current role keywords (must match ≥1): {config['role_keywords']}")
+    kw_input = input("Enter role keywords (comma-separated) or press Enter to keep:\n> ").strip()
     if kw_input:
-        config["keywords"] = [k.strip().lower() for k in kw_input.split(",") if k.strip()]
+        config["role_keywords"] = [k.strip().lower() for k in kw_input.split(",") if k.strip()]
+
+    print(f"\nCurrent field keywords (must match ≥1): {config['field_keywords']}")
+    kw_input = input("Enter field keywords (comma-separated) or press Enter to keep:\n> ").strip()
+    if kw_input:
+        config["field_keywords"] = [k.strip().lower() for k in kw_input.split(",") if k.strip()]
 
     # Email
     print("\n--- Email Setup ---")
