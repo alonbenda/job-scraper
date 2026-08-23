@@ -9,6 +9,7 @@ Monitors **90+ career pages** for job listings matching your keywords in Israel.
 - **Keyword filtering**: matches job titles against your keywords (student, intern, software, engineer)
 - **Israel location filter**: only shows jobs in Israeli locations
 - **Local dashboard**: browse new jobs, site status, and filter/sort — instead of an email per scan
+- **Global dashboard** (`web/index.html`, deployed on Netlify): the same view, reachable from any device — see "Global dashboard" below
 - **Optional email notifications**: HTML-formatted email grouped by company, off by default (`config.json` → `email.enabled`)
 - **Duplicate detection**: link-based job IDs (falls back to title+location when a site's links don't discriminate between openings) so re-scans don't re-notify
 - **Shared Supabase backend**: this same codebase runs both locally (Task Scheduler) and in the cloud (GitHub Actions) — both write into the same `sites`/`jobs` tables, so the dashboard shows results from either
@@ -43,6 +44,16 @@ Right-click `setup_scheduler.bat` → **Run as Administrator** (runs every 60 mi
 ### 5. Cloud runs (GitHub Actions)
 `.github/workflows/scraper.yml` runs `job_scraper.py` directly, daily via cron. Email/Supabase credentials come from GitHub Secrets as environment variables — same mechanism as a local run, no CI-specific wrapper or config mutation involved. It writes into the same Supabase project as local runs.
 
+## Global dashboard (Netlify + Supabase Auth)
+
+`web/index.html` is a self-contained static page that talks to Supabase **directly from the browser** — no backend, so it deploys to Netlify's static hosting and works from any device (PC, phone, anywhere). It uses the public **anon key** (not the secret key `db.py` uses), gated by Supabase Auth (a real login) and Row Level Security policies — the anon key alone can't read anything without a valid login.
+
+One-time setup:
+1. In the Supabase SQL editor, run the RLS policy SQL (enables login-gated read access to `jobs`/`sites`/`ui_state` — the scraper's secret key bypasses RLS entirely, so this doesn't affect scraping).
+2. Authentication → Users → Add User, to create your login (email + password) — done in the Supabase dashboard, not committed anywhere.
+3. Paste the anon key (Project Settings → API) into `SUPABASE_ANON_KEY` in `web/index.html`.
+4. Connect this repo to Netlify (`publish = "web"`, already set in `netlify.toml`, no build command) — auto-deploys on every push to `main`.
+
 ## Customization
 
 Edit `config.json`:
@@ -57,7 +68,9 @@ Edit `config.json`:
 |------|---------|
 | `job_scraper.py` | Main scraper — scraping, filtering, job-ID assignment, email |
 | `dashboard.py` | Local Flask dashboard — jobs table, site status, filters |
-| `templates/dashboard.html` | Dashboard UI |
+| `templates/dashboard.html` | Local dashboard UI |
+| `web/index.html` | Global dashboard — static, talks to Supabase directly, deployed on Netlify |
+| `netlify.toml` | Netlify deploy config (`publish = "web"`) |
 | `db.py` | Supabase REST client (sites, jobs, search queries, dashboard reads) |
 | `config.json` | All non-secret settings (site list, keywords, email on/off) |
 | `setup_scheduler.bat` | Windows scheduler setup |
