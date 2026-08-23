@@ -73,6 +73,25 @@
   a.apply { color: #2563eb; text-decoration: none; font-size: 13px; }
   .empty-msg { text-align: center; color: var(--muted); padding: 30px; }
 
+  @media (max-width: 640px) {
+    body { padding: 12px; }
+    header { flex-wrap: wrap; gap: 12px; }
+    table, thead, tbody, th, tr, td { display: block; }
+    thead tr { position: absolute; top: -9999px; left: -9999px; }
+    table { border: none; }
+    tbody tr {
+      border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px;
+      padding: 8px 10px; background: var(--card);
+    }
+    tbody tr.new-row { background: #fffbeb; }
+    tbody td { border: none; padding: 6px 4px; }
+    tbody td::before {
+      content: attr(data-label); display: block; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .02em; color: var(--muted); margin-bottom: 2px;
+    }
+    tbody td[data-label="Title"] { font-size: 15px; font-weight: 600; }
+  }
+
   #loginScreen {
     max-width: 360px; margin: 80px auto; text-align: center;
   }
@@ -343,12 +362,12 @@ function renderJobs() {
     const link = j.link ? `<a class="apply" href="${j.link}" target="_blank" rel="noopener">Apply →</a>` : 'N/A';
     return `
       <tr class="${isNew(j) ? 'new-row' : ''}">
-        <td>${isNew(j) ? '<span class="new-badge">NEW</span>' : ''}${j.title}</td>
-        <td><span class="cat-badge ${cat}">${catLabel}</span>${j.company || ''}</td>
-        <td>${scoreBadge(j.fit_score)}</td>
-        <td>${j.posted_date || '—'}</td>
-        <td>${roles}${fields}</td>
-        <td>${link}</td>
+        <td data-label="Title">${isNew(j) ? '<span class="new-badge">NEW</span>' : ''}${j.title}</td>
+        <td data-label="Company"><span class="cat-badge ${cat}">${catLabel}</span>${j.company || ''}</td>
+        <td data-label="CV Fit">${scoreBadge(j.fit_score)}</td>
+        <td data-label="Posted">${j.posted_date || '—'}</td>
+        <td data-label="Keywords">${roles}${fields}</td>
+        <td data-label="Link">${link}</td>
       </tr>`;
   }).join('');
 }
