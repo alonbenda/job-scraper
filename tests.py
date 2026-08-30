@@ -20,7 +20,6 @@ from job_scraper import (
     matches_job,
     matches_location,
     job_id,
-    legacy_job_id,
     canonical_link,
     assign_job_ids,
     extract_jobs_from_html,
@@ -331,17 +330,6 @@ def test_context_jobs_expose_useless_link_when_one_job_matches():
     assert matching[0]["id"] == job_id({"site": "Acme", "title": "SW Intern",
                                         "location": "Tel Aviv"}, "")
 
-def test_batch_sets_legacy_id():
-    jobs = [{"site": "Acme", "title": "SW Intern", "link": "https://acme.com/jobs/1"}]
-    assign_job_ids(jobs)
-    assert jobs[0]["legacy_id"] == legacy_job_id(jobs[0])
-
-def test_legacy_job_id_pins_old_scheme():
-    """Pins the migration path — must stay byte-identical to the old formula."""
-    import hashlib
-    job = {"site": "Google", "title": "Software Intern"}
-    expected = hashlib.md5("google|software intern".encode()).hexdigest()
-    assert legacy_job_id(job) == expected
 
 
 # ===========================================================================
@@ -556,25 +544,6 @@ def test_local_store_update_last_seen_bumps_existing_only(tmp_path, monkeypatch)
     assert "unknown-id" not in store._seen_jobs
     # ISO timestamps sort lexicographically — the bump must not go backwards
     assert store._seen_jobs["abc123"]["last_seen"] >= old_last_seen
-
-def test_local_store_migrate_job_ids_renames_preserving_first_seen(tmp_path, monkeypatch):
-    store = _make_store(tmp_path, monkeypatch)
-    store.save_new_jobs([{"id": "legacy-id", "title": "SW Intern", "site": "Acme"}])
-    first_seen = store._seen_jobs["legacy-id"]["first_seen"]
-    store.migrate_job_ids([("legacy-id", "new-id")])
-    assert "legacy-id" not in store._seen_jobs
-    assert store._seen_jobs["new-id"]["first_seen"] == first_seen
-
-def test_local_store_migrate_job_ids_skips_if_new_id_already_present(tmp_path, monkeypatch):
-    store = _make_store(tmp_path, monkeypatch)
-    store.save_new_jobs([
-        {"id": "legacy-id", "title": "Old", "site": "Acme"},
-        {"id": "new-id", "title": "New", "site": "Acme"},
-    ])
-    store.migrate_job_ids([("legacy-id", "new-id")])
-    # new-id must keep its own data, not get clobbered by the legacy row
-    assert store._seen_jobs["new-id"]["title"] == "New"
-    assert "legacy-id" in store._seen_jobs  # left alone since the target was taken
 
 def test_local_store_get_all_sites_marks_discovered_flag():
     config = {"urls": [

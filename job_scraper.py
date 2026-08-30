@@ -881,20 +881,9 @@ def job_id(job: dict, canon: str = None) -> str:
     return hashlib.md5(job_identity(job, canon).encode()).hexdigest()
 
 
-def legacy_job_id(job: dict) -> str:
-    """
-    The pre-2026-08 ID scheme (site + title only). Kept solely so the first
-    scans after the switch can migrate existing rows in place instead of
-    re-notifying the whole corpus. Safe to delete — along with the migration
-    branch in run_scraper() — once "Migrated N job IDs" stays at 0.
-    """
-    raw = f"{job['site']}|{job['title']}".lower().strip()
-    return hashlib.md5(raw.encode()).hexdigest()
-
-
 def assign_job_ids(jobs: list[dict], context_jobs: list[dict] = None) -> None:
     """
-    Set job["id"] and job["legacy_id"] for a batch of jobs from one site.
+    Set job["id"] for a batch of jobs from one site.
 
     Whether a link discriminates is decided per batch, not per job: a site
     where every opening links to the same URL (Google Jobs, where link is just
@@ -920,7 +909,6 @@ def assign_job_ids(jobs: list[dict], context_jobs: list[dict] = None) -> None:
         if canon and len(titles_per_canon.get(canon, ())) > 1:
             canon = ""  # link is shared across distinct openings — not identifying
         job["id"] = job_id(job, canon)
-        job["legacy_id"] = legacy_job_id(job)
 
 # ---------------------------------------------------------------------------
 # CV Parsing & Job Fit Scoring
@@ -1531,8 +1519,6 @@ def run_scraper():
     discovered_with_jobs = 0    # ...of which had ≥1 raw job
     currently_live_ids = set()  # Track job IDs found in this scan
     existing_seen_ids = []  # Track IDs of jobs we've already seen
-    consumed_legacy_ids = set()  # Legacy IDs already claimed by a job this run
-    id_migrations = []      # (legacy_id, new_id) rows to rewrite in place
 
     # --- Parallel scraping with ThreadPoolExecutor ---
     max_workers = config.get("max_workers", 5)
@@ -1610,22 +1596,12 @@ def run_scraper():
         assign_job_ids(matching, context_jobs=jobs)
         for job in matching:
             currently_live_ids.add(job["id"])
-            # Keep legacy rows alive too until they've been migrated
-            currently_live_ids.add(job["legacy_id"])
 
         # Find new jobs (not seen before)
         new_jobs = []
         for job in matching:
-            jid, lid = job["id"], job["legacy_id"]
+            jid = job["id"]
             if jid in seen_job_ids:
-                existing_seen_ids.append(jid)
-            elif lid in seen_job_ids and lid not in consumed_legacy_ids:
-                # A legacy row stands for exactly ONE opening. The first job to
-                # claim it inherits it; any sibling sharing that title+company
-                # is genuinely new and must still be notified.
-                consumed_legacy_ids.add(lid)
-                id_migrations.append((lid, jid))
-                seen_job_ids.add(jid)
                 existing_seen_ids.append(jid)
             else:
                 new_jobs.append(job)
@@ -1637,11 +1613,7 @@ def run_scraper():
         else:
             logger.info(f"  [{url_entry.get('name')}] {len(matching)} matching, 0 new")
 
-    if id_migrations:
-        logger.info(f"🔀 Migrated {len(id_migrations)} job ID(s) to the new scheme")
-
     # Save data
-    store.migrate_job_ids(id_migrations)  # must run before save_new_jobs
     store.save_new_jobs(all_new_jobs)
     store.update_last_seen(existing_seen_ids)
     store.delete_stale_jobs(currently_live_ids)

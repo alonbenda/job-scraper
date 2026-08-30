@@ -2,7 +2,7 @@
 job_store.py - Unified interface for persisting sites, jobs, and search
 queries, backed by either Supabase or local JSON files.
 
-Both implementations share the same 9 operations so run_scraper() makes
+Both implementations share the same 8 operations so run_scraper() makes
 exactly one branching decision (which store to construct) instead of
 branching on use_db throughout.
 """
@@ -49,10 +49,6 @@ class JobStore(ABC):
         """Return the set of job IDs already known from previous scans."""
 
     @abstractmethod
-    def migrate_job_ids(self, pairs: list[tuple[str, str]]):
-        """Rewrite legacy IDs to their new scheme in place. Must run before save_new_jobs."""
-
-    @abstractmethod
     def save_new_jobs(self, jobs: list[dict]):
         """Persist newly-found jobs (each already has 'id' set)."""
 
@@ -84,9 +80,6 @@ class SupabaseJobStore(JobStore):
 
     def get_seen_job_ids(self):
         return db.get_seen_job_ids()
-
-    def migrate_job_ids(self, pairs):
-        db.migrate_job_ids(pairs)
 
     def save_new_jobs(self, jobs):
         db.save_new_jobs(jobs)
@@ -134,11 +127,6 @@ class LocalFileJobStore(JobStore):
 
     def get_seen_job_ids(self):
         return set(self._seen_jobs.keys())
-
-    def migrate_job_ids(self, pairs):
-        for old_id, new_id in pairs:
-            if old_id in self._seen_jobs and new_id not in self._seen_jobs:
-                self._seen_jobs[new_id] = self._seen_jobs.pop(old_id)
 
     def save_new_jobs(self, jobs):
         now = datetime.now().isoformat()

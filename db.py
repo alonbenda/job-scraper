@@ -139,35 +139,6 @@ def get_seen_job_ids() -> set:
         return set()
 
 
-def migrate_job_ids(pairs: list):
-    """
-    Rewrite existing rows from the legacy (site+title) ID to the new one,
-    preserving first_seen and the rest of the row.
-
-    Only fires on the first scans after the ID scheme changed, so one request
-    per row is fine. Delete this along with legacy_job_id() once it stays idle.
-    """
-    if not pairs:
-        return
-    for old_id, new_id in pairs:
-        try:
-            resp = requests.patch(
-                f"{SUPABASE_URL}/rest/v1/jobs",
-                headers=_headers(),
-                params={"id": f"eq.{old_id}"},
-                json={"id": new_id},
-            )
-            if resp.status_code >= 400:
-                # A row already exists under the new ID — drop the legacy one
-                requests.delete(
-                    f"{SUPABASE_URL}/rest/v1/jobs",
-                    headers=_headers(),
-                    params={"id": f"eq.{old_id}"},
-                )
-        except Exception as e:
-            logger.error(f"DB: Failed to migrate job ID {old_id}: {e}")
-
-
 def save_new_jobs(jobs: list[dict]):
     """Insert new jobs into the database."""
     if not jobs:
