@@ -390,11 +390,16 @@ async function loadSites() {
 }
 
 async function markViewed() {
-  await supaFetch('/rest/v1/ui_state', {
-    method: 'POST',
-    headers: { 'Prefer': 'resolution=merge-duplicates' },
-    body: JSON.stringify({ id: 1, last_viewed_at: new Date().toISOString() }),
+  // A plain update, not an upsert: the row always exists (created during setup),
+  // and RLS only grants this role UPDATE on ui_state, not INSERT — a
+  // merge-duplicates POST silently fails here even though the row is already there.
+  const resp = await supaFetch('/rest/v1/ui_state?id=eq.1', {
+    method: 'PATCH',
+    body: JSON.stringify({ last_viewed_at: new Date().toISOString() }),
   });
+  if (!resp.ok) {
+    console.warn('mark-viewed failed:', resp.status, await resp.text());
+  }
 }
 
 async function refreshAll() {
