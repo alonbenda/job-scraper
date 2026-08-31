@@ -71,6 +71,7 @@
   .cat-badge.student { background: #dcfce7; color: #166534; }
   .cat-badge.junior { background: #eff6ff; color: #1e40af; }
   a.apply { color: #2563eb; text-decoration: none; font-size: 13px; }
+  a.apply.visited { color: #16a34a; font-weight: 600; }
   .empty-msg { text-align: center; color: var(--muted); padding: 30px; }
 
   @media (max-width: 640px) {
@@ -153,9 +154,12 @@
 </div>
 
 <script>
+const NEW_BADGE_GRACE_MS = 2 * 60 * 1000; // jobs stay NEW for at least 2 min after you open the dashboard
+
 let allJobs = [];
 let lastViewedAt = null;
 let sites = [];
+let sessionStartedAt = Date.now();
 
 function scoreBadge(score) {
   if (score === undefined || score === null || score < 0) {
@@ -240,7 +244,10 @@ function renderJobs() {
     const catLabel = cat === 'student' ? '🎓 Student' : '🚀 Junior';
     const roles = (j.matched_roles || []).map(k => `<span class="kw">${k}</span>`).join('');
     const fields = (j.matched_fields || []).map(k => `<span class="kw field">${k}</span>`).join('');
-    const link = j.link ? `<a class="apply" href="${j.link}" target="_blank" rel="noopener">Apply →</a>` : 'N/A';
+    const visited = !!j.clicked_at;
+    const link = j.link
+      ? `<a class="apply ${visited ? 'visited' : ''}" href="${j.link}" target="_blank" rel="noopener" data-job-id="${j.id}">${visited ? '✓ Visited' : 'Apply →'}</a>`
+      : 'N/A';
     return `
       <tr class="${isNew(j) ? 'new-row' : ''}">
         <td data-label="Title">${isNew(j) ? '<span class="new-badge">NEW</span>' : ''}${j.title}</td>
@@ -251,6 +258,26 @@ function renderJobs() {
         <td data-label="Link">${link}</td>
       </tr>`;
   }).join('');
+  body.querySelectorAll('a.apply[data-job-id]').forEach(el => {
+    el.onclick = () => markClicked(el.dataset.jobId);
+  });
+}
+
+async function markClicked(jobId) {
+  const job = allJobs.find(j => j.id === jobId);
+  if (job && !job.clicked_at) {
+    job.clicked_at = new Date().toISOString();
+    renderJobs();
+  }
+  try {
+    await fetch('/api/mark-clicked', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: jobId }),
+    });
+  } catch {
+    // best-effort — the link already opened via target="_blank" regardless
+  }
 }
 
 async function loadJobs() {
@@ -271,6 +298,13 @@ async function loadSites() {
 async function refreshAll() {
   await Promise.all([loadJobs(), loadSites()]);
   document.getElementById('lastRefreshed').textContent = 'Last refreshed: ' + new Date().toLocaleTimeString();
+
+  // Marks "now" as viewed so jobs shown as NEW in *this* render stop being NEW
+  // on the *next* refresh — manual click or the 60s auto-refresh, either one.
+  // Held off for the first 2 minutes of the session so NEW badges don't
+  // disappear before you've had a chance to actually see them.
+  if (Date.now() - sessionStartedAt < NEW_BADGE_GRACE_MS) return;
+  fetch('/api/mark-viewed', { method: 'POST' });
 }
 
 let autoRefreshTimer = null;
@@ -289,7 +323,6 @@ document.getElementById('timeFilter').onchange = renderJobs;
 document.getElementById('sortBy').onchange = renderJobs;
 
 refreshAll().then(scheduleAutoRefresh);
-setTimeout(() => fetch('/api/mark-viewed', { method: 'POST' }), 4000);
 </script>
 </body>
 </html>

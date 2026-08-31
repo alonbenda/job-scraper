@@ -71,6 +71,7 @@
   .cat-badge.student { background: #dcfce7; color: #166534; }
   .cat-badge.junior { background: #eff6ff; color: #1e40af; }
   a.apply { color: #2563eb; text-decoration: none; font-size: 13px; }
+  a.apply.visited { color: #16a34a; font-weight: 600; }
   .empty-msg { text-align: center; color: var(--muted); padding: 30px; }
 
   @media (max-width: 640px) {
@@ -188,9 +189,12 @@
 const SUPABASE_URL = "https://bopkycnbkgqhycevjutn.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJvcGt5Y25ia2dxaHljZXZqdXRuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU2NTg2NzUsImV4cCI6MjA5MTIzNDY3NX0.i571cyS3XqQ5W7M7nZ6AA7Xpemt4AExwIaV9g0ccHAo";
 
+const NEW_BADGE_GRACE_MS = 2 * 60 * 1000; // jobs stay NEW for at least 2 min after you open the dashboard
+
 let allJobs = [];
 let lastViewedAt = null;
 let sites = [];
+let sessionStartedAt = null;
 
 // -- auth --
 
@@ -359,7 +363,10 @@ function renderJobs() {
     const catLabel = cat === 'student' ? '🎓 Student' : '🚀 Junior';
     const roles = (j.matched_roles || []).map(k => `<span class="kw">${k}</span>`).join('');
     const fields = (j.matched_fields || []).map(k => `<span class="kw field">${k}</span>`).join('');
-    const link = j.link ? `<a class="apply" href="${j.link}" target="_blank" rel="noopener">Apply →</a>` : 'N/A';
+    const visited = !!j.clicked_at;
+    const link = j.link
+      ? `<a class="apply ${visited ? 'visited' : ''}" href="${j.link}" target="_blank" rel="noopener" data-job-id="${j.id}">${visited ? '✓ Visited' : 'Apply →'}</a>`
+      : 'N/A';
     return `
       <tr class="${isNew(j) ? 'new-row' : ''}">
         <td data-label="Title">${isNew(j) ? '<span class="new-badge">NEW</span>' : ''}${j.title}</td>
@@ -370,6 +377,25 @@ function renderJobs() {
         <td data-label="Link">${link}</td>
       </tr>`;
   }).join('');
+  body.querySelectorAll('a.apply[data-job-id]').forEach(el => {
+    el.onclick = () => markClicked(el.dataset.jobId);
+  });
+}
+
+async function markClicked(jobId) {
+  const job = allJobs.find(j => j.id === jobId);
+  if (job && !job.clicked_at) {
+    job.clicked_at = new Date().toISOString();
+    renderJobs();
+  }
+  try {
+    await supaFetch(`/rest/v1/jobs?id=eq.${jobId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ clicked_at: new Date().toISOString() }),
+    });
+  } catch {
+    // best-effort — the link already opened via target="_blank" regardless
+  }
 }
 
 // -- data loading (direct Supabase REST, same shape db.py's functions return) --
@@ -405,6 +431,19 @@ async function markViewed() {
 async function refreshAll() {
   await Promise.all([loadJobs(), loadSites()]);
   document.getElementById('lastRefreshed').textContent = 'Last refreshed: ' + new Date().toLocaleTimeString();
+
+  // Marks "now" as viewed so jobs shown as NEW in *this* render stop being NEW
+  // on the *next* refresh — manual click or the 60s auto-refresh, either one.
+  // Uses the lastViewedAt already fetched above for this render, so it never
+  // affects what's showing right now, only what shows from here on.
+  // Held off for the first 2 minutes of the session so NEW badges don't
+  // disappear before you've had a chance to actually see them.
+  if (sessionStartedAt !== null && Date.now() - sessionStartedAt < NEW_BADGE_GRACE_MS) return;
+  try {
+    await markViewed();
+  } catch {
+    // supaFetch already switched to the login screen if the session expired
+  }
 }
 
 let autoRefreshTimer = null;
@@ -434,10 +473,10 @@ document.getElementById('loginForm').onsubmit = async (e) => {
   document.getElementById('loginError').textContent = '';
   try {
     await login(email, password);
+    sessionStartedAt = Date.now();
     showDashboard();
     await refreshAll();
     scheduleAutoRefresh();
-    setTimeout(markViewed, 4000);
   } catch (err) {
     document.getElementById('loginError').textContent = err.message || 'Login failed';
   }
@@ -452,10 +491,10 @@ document.getElementById('loginForm').onsubmit = async (e) => {
     return;
   }
   try {
+    sessionStartedAt = Date.now();
     showDashboard();
     await refreshAll();
     scheduleAutoRefresh();
-    setTimeout(markViewed, 4000);
   } catch {
     // supaFetch already switched to the login screen on auth failure
   }

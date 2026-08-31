@@ -10,7 +10,7 @@ Usage:
 import webbrowser
 from threading import Timer
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
 import db
 
@@ -41,6 +41,14 @@ def api_sites():
 @app.route("/api/mark-viewed", methods=["POST"])
 def api_mark_viewed():
     db.set_last_viewed()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/mark-clicked", methods=["POST"])
+def api_mark_clicked():
+    job_id = (request.get_json(silent=True) or {}).get("id", "")
+    if job_id:
+        db.mark_job_clicked(job_id)
     return jsonify({"ok": True})
 
 

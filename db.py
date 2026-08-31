@@ -302,3 +302,16 @@ def set_last_viewed():
         )
     except Exception:
         pass  # Non-critical, don't crash the dashboard
+
+
+def mark_job_clicked(job_id: str):
+    """Record that the user clicked through to a job's listing."""
+    try:
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/jobs",
+            headers=_headers(),
+            params={"id": f"eq.{job_id}"},
+            json={"clicked_at": datetime.now().isoformat()},
+        )
+    except Exception:
+        pass  # Non-critical, don't crash the dashboard
