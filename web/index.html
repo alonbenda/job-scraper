@@ -189,12 +189,11 @@
 const SUPABASE_URL = "https://bopkycnbkgqhycevjutn.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJvcGt5Y25ia2dxaHljZXZqdXRuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU2NTg2NzUsImV4cCI6MjA5MTIzNDY3NX0.i571cyS3XqQ5W7M7nZ6AA7Xpemt4AExwIaV9g0ccHAo";
 
-const NEW_BADGE_GRACE_MS = 2 * 60 * 1000; // jobs stay NEW for at least 2 min after you open the dashboard
+const NEW_BADGE_GRACE_MS = 2 * 60 * 1000; // jobs stay NEW for ~2 min after being found (see markViewed)
 
 let allJobs = [];
 let lastViewedAt = null;
 let sites = [];
-let sessionStartedAt = null;
 
 // -- auth --
 
@@ -416,12 +415,19 @@ async function loadSites() {
 }
 
 async function markViewed() {
+  // Anchored to absolute time (now minus the grace window), not to when any
+  // one tab/session started — a job stays NEW for ~2 min after being found,
+  // consistently across however many tabs/devices you have open. Anchoring
+  // to "session start" instead would let one tab's refresh reset the clock
+  // for every other tab/device sharing this same row.
+  //
   // A plain update, not an upsert: the row always exists (created during setup),
   // and RLS only grants this role UPDATE on ui_state, not INSERT — a
   // merge-duplicates POST silently fails here even though the row is already there.
+  const cutoff = new Date(Date.now() - NEW_BADGE_GRACE_MS).toISOString();
   const resp = await supaFetch('/rest/v1/ui_state?id=eq.1', {
     method: 'PATCH',
-    body: JSON.stringify({ last_viewed_at: new Date().toISOString() }),
+    body: JSON.stringify({ last_viewed_at: cutoff }),
   });
   if (!resp.ok) {
     console.warn('mark-viewed failed:', resp.status, await resp.text());
@@ -431,14 +437,6 @@ async function markViewed() {
 async function refreshAll() {
   await Promise.all([loadJobs(), loadSites()]);
   document.getElementById('lastRefreshed').textContent = 'Last refreshed: ' + new Date().toLocaleTimeString();
-
-  // Marks "now" as viewed so jobs shown as NEW in *this* render stop being NEW
-  // on the *next* refresh — manual click or the 60s auto-refresh, either one.
-  // Uses the lastViewedAt already fetched above for this render, so it never
-  // affects what's showing right now, only what shows from here on.
-  // Held off for the first 2 minutes of the session so NEW badges don't
-  // disappear before you've had a chance to actually see them.
-  if (sessionStartedAt !== null && Date.now() - sessionStartedAt < NEW_BADGE_GRACE_MS) return;
   try {
     await markViewed();
   } catch {
@@ -473,7 +471,6 @@ document.getElementById('loginForm').onsubmit = async (e) => {
   document.getElementById('loginError').textContent = '';
   try {
     await login(email, password);
-    sessionStartedAt = Date.now();
     showDashboard();
     await refreshAll();
     scheduleAutoRefresh();
@@ -491,7 +488,6 @@ document.getElementById('loginForm').onsubmit = async (e) => {
     return;
   }
   try {
-    sessionStartedAt = Date.now();
     showDashboard();
     await refreshAll();
     scheduleAutoRefresh();

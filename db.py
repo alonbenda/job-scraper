@@ -10,12 +10,14 @@ Environment variables required:
 import os
 import logging
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+
+NEW_BADGE_GRACE = timedelta(minutes=2)  # jobs stay NEW for this long after being found
 
 
 def _headers(prefer: str = "") -> dict:
@@ -95,7 +97,7 @@ def update_site_status(name: str, status: str, job_count: int = 0):
             headers=_headers(),
             params={"name": f"eq.{name}"},
             json={
-                "last_scraped": datetime.now().isoformat(),
+                "last_scraped": datetime.now(timezone.utc).isoformat(),
                 "last_status": status,
                 "job_count": job_count,
             },
@@ -159,8 +161,8 @@ def save_new_jobs(jobs: list[dict]):
                 "matched_roles": job.get("matched_roles", []),
                 "matched_fields": job.get("matched_fields", []),
                 "notified": True,
-                "first_seen": datetime.now().isoformat(),
-                "last_seen": datetime.now().isoformat(),
+                "first_seen": datetime.now(timezone.utc).isoformat(),
+                "last_seen": datetime.now(timezone.utc).isoformat(),
             })
 
         # Batch insert
@@ -185,7 +187,7 @@ def update_last_seen(job_ids: list[str]):
     try:
         # Process in batches
         batch_size = 100
-        now = datetime.now().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         for i in range(0, len(job_ids), batch_size):
             batch = job_ids[i:i + batch_size]
             ids_filter = ",".join(batch)
@@ -202,7 +204,6 @@ def update_last_seen(job_ids: list[str]):
 def delete_stale_jobs(keep_ids: set, max_age_days: int = 30):
     """Delete jobs not seen in recent scans and older than max_age_days."""
     try:
-        cutoff = datetime.now().isoformat()
         resp = requests.get(
             f"{SUPABASE_URL}/rest/v1/jobs",
             headers=_headers(),
@@ -218,8 +219,10 @@ def delete_stale_jobs(keep_ids: set, max_age_days: int = 30):
         for r in rows:
             if r["id"] not in keep_ids:
                 try:
-                    last_seen = datetime.fromisoformat(r["last_seen"].replace("Z", "+00:00").replace("+00:00", ""))
-                    age_days = (datetime.now() - last_seen).days
+                    last_seen = datetime.fromisoformat(r["last_seen"].replace("Z", "+00:00"))
+                    if last_seen.tzinfo is None:
+                        last_seen = last_seen.replace(tzinfo=timezone.utc)
+                    age_days = (datetime.now(timezone.utc) - last_seen).days
                     if age_days > max_age_days:
                         to_delete.append(r["id"])
                 except Exception:
@@ -293,12 +296,18 @@ def get_last_viewed() -> str | None:
 
 
 def set_last_viewed():
-    """Mark the dashboard as viewed right now."""
+    """
+    Mark the dashboard as viewed. Anchored to (now - NEW_BADGE_GRACE), not to
+    when any one tab/session started — a job stays NEW for that long after
+    being found, consistently across however many tabs are open, instead of
+    every refresh resetting the clock for all of them.
+    """
     try:
+        cutoff = (datetime.now(timezone.utc) - NEW_BADGE_GRACE).isoformat()
         requests.post(
             f"{SUPABASE_URL}/rest/v1/ui_state",
             headers=_headers(prefer="resolution=merge-duplicates"),
-            json={"id": 1, "last_viewed_at": datetime.now().isoformat()},
+            json={"id": 1, "last_viewed_at": cutoff},
         )
     except Exception:
         pass  # Non-critical, don't crash the dashboard
@@ -311,7 +320,7 @@ def mark_job_clicked(job_id: str):
             f"{SUPABASE_URL}/rest/v1/jobs",
             headers=_headers(),
             params={"id": f"eq.{job_id}"},
-            json={"clicked_at": datetime.now().isoformat()},
+            json={"clicked_at": datetime.now(timezone.utc).isoformat()},
         )
     except Exception:
         pass  # Non-critical, don't crash the dashboard

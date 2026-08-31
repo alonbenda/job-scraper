@@ -154,12 +154,9 @@
 </div>
 
 <script>
-const NEW_BADGE_GRACE_MS = 2 * 60 * 1000; // jobs stay NEW for at least 2 min after you open the dashboard
-
 let allJobs = [];
 let lastViewedAt = null;
 let sites = [];
-let sessionStartedAt = Date.now();
 
 function scoreBadge(score) {
   if (score === undefined || score === null || score < 0) {
@@ -298,12 +295,9 @@ async function loadSites() {
 async function refreshAll() {
   await Promise.all([loadJobs(), loadSites()]);
   document.getElementById('lastRefreshed').textContent = 'Last refreshed: ' + new Date().toLocaleTimeString();
-
-  // Marks "now" as viewed so jobs shown as NEW in *this* render stop being NEW
-  // on the *next* refresh — manual click or the 60s auto-refresh, either one.
-  // Held off for the first 2 minutes of the session so NEW badges don't
-  // disappear before you've had a chance to actually see them.
-  if (Date.now() - sessionStartedAt < NEW_BADGE_GRACE_MS) return;
+  // The server anchors this to (now - 2min), not to when this tab opened —
+  // so a job stays NEW for ~2 min after being found, consistently across
+  // however many tabs are open, instead of every refresh resetting the clock.
   fetch('/api/mark-viewed', { method: 'POST' });
 }
 
