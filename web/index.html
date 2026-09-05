@@ -60,6 +60,8 @@
   th { text-align: left; padding: 10px 12px; border-bottom: 2px solid var(--border); background: #f8fafc; font-size: 12px; color: var(--muted); }
   td { padding: 8px 12px; border-bottom: 1px solid #eee; vertical-align: top; }
   tr.new-row { background: #fffbeb; }
+  /* Border accent, not a background — layers with .new-row instead of fighting it */
+  tr.new-company-row { border-left: 4px solid #7c3aed; }
   .new-badge {
     background: #fde68a; color: #78350f; font-size: 10px; font-weight: 700;
     padding: 1px 6px; border-radius: 10px; margin-right: 6px;
@@ -85,6 +87,7 @@
       padding: 8px 10px; background: var(--card);
     }
     tbody tr.new-row { background: #fffbeb; }
+    tbody tr.new-company-row { border-left: 4px solid #7c3aed; }
     tbody td { border: none; padding: 6px 4px; }
     tbody td::before {
       content: attr(data-label); display: block; font-size: 10px; font-weight: 700;
@@ -366,10 +369,12 @@ function renderJobs() {
     const link = j.link
       ? `<a class="apply ${visited ? 'visited' : ''}" href="${j.link}" target="_blank" rel="noopener" data-job-id="${j.id}">${visited ? '✓ Visited' : 'Apply →'}</a>`
       : 'N/A';
+    const rowClasses = [isNew(j) ? 'new-row' : '', j.new_company ? 'new-company-row' : ''].filter(Boolean).join(' ');
+    const rowTitle = j.new_company ? 'title="New company — not one of the directly-scraped sites"' : '';
     return `
-      <tr class="${isNew(j) ? 'new-row' : ''}">
+      <tr class="${rowClasses}" ${rowTitle}>
         <td data-label="Title">${isNew(j) ? '<span class="new-badge">NEW</span>' : ''}${j.title}</td>
-        <td data-label="Company"><span class="cat-badge ${cat}">${catLabel}</span>${j.company || ''}</td>
+        <td data-label="Company"><span class="cat-badge ${cat}">${catLabel}</span>${j.new_company ? '🆕 ' : ''}${j.company || ''}</td>
         <td data-label="CV Fit">${scoreBadge(j.fit_score)}</td>
         <td data-label="Posted">${j.posted_date || '—'}</td>
         <td data-label="Keywords">${roles}${fields}</td>

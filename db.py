@@ -160,6 +160,7 @@ def save_new_jobs(jobs: list[dict]):
                 "missing_skills": job.get("missing_skills", []),
                 "matched_roles": job.get("matched_roles", []),
                 "matched_fields": job.get("matched_fields", []),
+                "new_company": job.get("new_company", False),
                 "notified": True,
                 "first_seen": datetime.now(timezone.utc).isoformat(),
                 "last_seen": datetime.now(timezone.utc).isoformat(),

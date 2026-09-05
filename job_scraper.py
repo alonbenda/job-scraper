@@ -1682,6 +1682,12 @@ def run_scraper():
                 # aggregator copy would just be a redundant duplicate.
                 aggregator_skipped += 1
                 continue
+            # Company extraction succeeded (job["site"] isn't the aggregator's own
+            # fallback name) and it's not one of our direct sources — worth flagging
+            # in the dashboard, purely informational (not auto-added as a site).
+            if is_aggregator and job["site"] not in _AGGREGATOR_SITE_NAMES:
+                job["new_company"] = True
+                logger.info(f"  🆕 New company via {url_entry.get('name')}: {job['site']} — {job['title']}")
             match = matches_job(job["title"], role_keywords, field_keywords, exclude_keywords)
             if match:
                 job["matched_keywords"] = match["all"]

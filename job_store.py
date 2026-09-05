@@ -138,6 +138,7 @@ class LocalFileJobStore(JobStore):
                     "site": job["site"],
                     "link": job.get("link", ""),
                     "location": job.get("location", ""),
+                    "new_company": job.get("new_company", False),
                     "first_seen": now,
                     "last_seen": now,
                 }
