@@ -224,8 +224,15 @@ def try_static_fetch(url: str) -> str | None:
         return None
 
 
-def extract_jobs_from_html(html: str, site_name: str, base_url: str) -> list[dict]:
-    """Extract job listings from raw HTML using BeautifulSoup."""
+def extract_jobs_from_html(html: str, site_name: str, base_url: str, is_aggregator: bool = False) -> list[dict]:
+    """
+    Extract job listings from raw HTML using BeautifulSoup.
+
+    is_aggregator: True for multi-employer listing sites (LinkedIn, Indeed, ...) —
+    each job's "site" becomes the real posting company (via _find_company_near)
+    instead of the aggregator's own name, falling back to site_name when nothing
+    is found nearby so this never drops a job just because extraction came up empty.
+    """
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, "html.parser")
     jobs = []
@@ -325,6 +332,36 @@ def extract_jobs_from_html(html: str, site_name: str, base_url: str) -> list[dic
                     return text
         return ""
 
+    def _find_company_near(element):
+        """
+        Try to find the posting company near a job element — only meaningful
+        on aggregator sites (LinkedIn, Indeed, ...) where one page lists many
+        employers. Verified against live pages: LinkedIn uses a "subtitle"
+        class, Indeed a "company-name" data-testid, GlassDoor an "employer"
+        class — case varies by site, hence the "i" flag throughout.
+        """
+        containers_to_check = []
+        parent = element.parent
+        for _ in range(4):
+            if parent:
+                containers_to_check.append(parent)
+                parent = parent.parent
+        if element.parent:
+            containers_to_check.extend(element.parent.find_all(True, recursive=False))
+
+        for container in containers_to_check:
+            if not container:
+                continue
+            company_els = container.select(
+                '[class*="company" i], [class*="employer" i], [class*="subtitle" i], '
+                '[data-testid*="company" i], [data-testid*="employer" i]'
+            )
+            for company_el in company_els:
+                text = company_el.get_text(strip=True)
+                if text and 1 < len(text) < 100:
+                    return text
+        return ""
+
     # Common selectors for job listings across many ATS platforms
     selectors = [
         # Greenhouse
@@ -377,11 +414,14 @@ def extract_jobs_from_html(html: str, site_name: str, base_url: str) -> list[dic
                     # Extract date and location from nearby elements
                     posted_date = _find_date_near(el)
                     location = _find_location_near(el)
+                    job_site = site_name
+                    if is_aggregator:
+                        job_site = _find_company_near(el) or site_name
 
                     jobs.append({
                         "title": title,
                         "link": link,
-                        "site": site_name,
+                        "site": job_site,
                         "posted_date": posted_date,
                         "location": location,
                     })
@@ -391,7 +431,7 @@ def extract_jobs_from_html(html: str, site_name: str, base_url: str) -> list[dic
     return jobs
 
 
-def scrape_with_selenium(url: str, site_name: str, headless: bool = True, timeout: int = 15) -> list[dict]:
+def scrape_with_selenium(url: str, site_name: str, headless: bool = True, timeout: int = 15, is_aggregator: bool = False) -> list[dict]:
     """Use Selenium for JS-rendered pages."""
     from selenium.webdriver.common.by import By
 
@@ -433,7 +473,7 @@ def scrape_with_selenium(url: str, site_name: str, headless: bool = True, timeou
 
         # Get full page HTML and parse it
         page_html = driver.page_source
-        jobs = extract_jobs_from_html(page_html, site_name, url)
+        jobs = extract_jobs_from_html(page_html, site_name, url, is_aggregator=is_aggregator)
 
         # Fallback: grab all visible text links
         if not jobs:
@@ -634,6 +674,7 @@ def scrape_site(url_entry: dict, config: dict) -> list[dict]:
     site_name = url_entry.get("name", urlparse(url).netloc)
     headless = config.get("headless", True)
     timeout = config.get("page_load_timeout", 15)
+    is_aggregator = site_name in _AGGREGATOR_SITE_NAMES
 
     logger.info(f"Scraping: {site_name}")
 
@@ -647,11 +688,11 @@ def scrape_site(url_entry: dict, config: dict) -> list[dict]:
     html = try_static_fetch(url)
     jobs = []
     if html:
-        jobs = extract_jobs_from_html(html, site_name, url)
+        jobs = extract_jobs_from_html(html, site_name, url, is_aggregator=is_aggregator)
 
     # Strategy 2: If static didn't work well, use Selenium
     if len(jobs) < 2:
-        selenium_jobs = scrape_with_selenium(url, site_name, headless, timeout)
+        selenium_jobs = scrape_with_selenium(url, site_name, headless, timeout, is_aggregator=is_aggregator)
         if len(selenium_jobs) > len(jobs):
             jobs = selenium_jobs
 
@@ -810,7 +851,54 @@ _TRACKING_PARAMS = {
     "gh_src", "src", "source", "ref", "refid", "referer", "referrer",
     "trk", "trackingid", "sessionid", "session_id",
     "fbclid", "gclid", "mc_cid", "mc_eid", "_ga",
+    # A job's rank in that scrape's search results, not part of its identity —
+    # reshuffles between scans and was causing the same LinkedIn/Indeed posting
+    # to get a new ID (and re-notify as "new") almost every scan.
+    "position", "pagenum", "bb", "xkcb",
 }
+
+# Multi-employer listing sites — a job's real "company" is the employer that
+# posted it, not the aggregator's own name. See extract_jobs_from_html's
+# is_aggregator param / _find_company_near.
+_AGGREGATOR_SITE_NAMES = {
+    "LinkedIn", "LinkedIn (Company)", "Indeed", "GlassDoor", "gotfriend", "Secret Hunter",
+}
+
+_COMPANY_NAME_SUFFIXES = (
+    " ltd", " inc", " llc", " gmbh", " technologies", " systems", " software", " group",
+)
+
+
+def _normalize_company_name(name: str) -> str:
+    """Lowercase, strip punctuation and common corporate suffixes, for fuzzy company matching."""
+    n = re.sub(r"[^\w\s]", " ", (name or "").lower())
+    n = re.sub(r"\s+", " ", n).strip()
+    for suffix in _COMPANY_NAME_SUFFIXES:
+        if n.endswith(suffix):
+            n = n[: -len(suffix)].strip()
+    return n
+
+
+def _company_already_covered(company: str, known_company_names: set) -> bool:
+    """
+    True if `company` (extracted from an aggregator listing) is a site we
+    already scrape directly — that job will turn up there anyway, so the
+    aggregator copy is redundant. Matches if the shorter normalized name is
+    a substring of the longer one, e.g. "Check Point" vs "Check Point
+    Software Technologies". Guarded by a minimum length so short names
+    (e.g. "AU") can't trivially false-match everything.
+    """
+    norm_company = _normalize_company_name(company)
+    if len(norm_company) < 3:
+        return False
+    for known in known_company_names:
+        norm_known = _normalize_company_name(known)
+        if len(norm_known) < 3:
+            continue
+        shorter, longer = sorted((norm_company, norm_known), key=len)
+        if shorter in longer:
+            return True
+    return False
 
 
 def _norm_text(s: str) -> str:
@@ -1476,6 +1564,12 @@ def run_scraper():
         logger.error("No sites configured! Check config.json's \"urls\", or run migrate_to_supabase.py.")
         return []
 
+    # Companies we already scrape directly — an aggregator-sourced job attributed
+    # to one of these is redundant, it'll turn up on the company's own page.
+    known_company_names = {
+        u["name"] for u in urls if u["name"] not in _AGGREGATOR_SITE_NAMES
+    }
+
     # --- General Google search: discover new sites for generic queries ---
     general_queries = store.get_search_queries()
 
@@ -1517,6 +1611,7 @@ def run_scraper():
     empty_sites = []        # Sites that returned 0 raw jobs (likely broken)
     discovered_scraped = 0      # Discovered (search-result) sites scraped this run
     discovered_with_jobs = 0    # ...of which had ≥1 raw job
+    aggregator_skipped = 0      # Aggregator jobs dropped — company already scraped directly
     currently_live_ids = set()  # Track job IDs found in this scan
     existing_seen_ids = []  # Track IDs of jobs we've already seen
 
@@ -1579,8 +1674,14 @@ def run_scraper():
             empty_sites.append(url_entry.get("name", url_entry["url"]))
 
         # Filter: must match ROLE + FIELD + LOCATION
+        is_aggregator = url_entry.get("name") in _AGGREGATOR_SITE_NAMES
         matching = []
         for job in jobs:
+            if is_aggregator and _company_already_covered(job["site"], known_company_names):
+                # We already scrape this company's own page directly — the
+                # aggregator copy would just be a redundant duplicate.
+                aggregator_skipped += 1
+                continue
             match = matches_job(job["title"], role_keywords, field_keywords, exclude_keywords)
             if match:
                 job["matched_keywords"] = match["all"]
@@ -1624,6 +1725,8 @@ def run_scraper():
     logger.info(f"Sites scanned: {len(urls)} | Errors: {errors} | Empty (0 jobs): {len(empty_sites)}")
     if discovered_scraped:
         logger.info(f"🔎 Discovered sites: {discovered_scraped} scraped, {discovered_with_jobs} had matching jobs")
+    if aggregator_skipped:
+        logger.info(f"🏢 Aggregator jobs skipped (company already scraped directly): {aggregator_skipped}")
     logger.info("=" * 60)
 
     # Report problematic sites

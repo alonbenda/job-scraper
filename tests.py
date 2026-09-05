@@ -25,6 +25,8 @@ from job_scraper import (
     extract_jobs_from_html,
     _is_useful_search_result,
     _build_discovered_entries,
+    _normalize_company_name,
+    _company_already_covered,
 )
 
 
@@ -603,3 +605,96 @@ def test_local_store_delete_stale_jobs_skips_if_run_recently(tmp_path, monkeypat
     store.save_new_jobs([{"id": "stale-two", "title": "Also filled", "site": "Acme"}])
     store.delete_stale_jobs(keep_ids={"keep-me"})  # second call, same day: gated, must not purge
     assert "stale-two" in store._seen_jobs
+
+
+# ===========================================================================
+# Aggregator company attribution — fixtures mirror real markup verified live
+# ===========================================================================
+
+def test_extract_finds_company_on_linkedin_shaped_page():
+    html = '''
+    <div class="base-search-card__info">
+      <h3 class="base-search-card__title"><a href="/jobs/view/123">Automation Student</a></h3>
+      <h4 class="base-search-card__subtitle"><a href="/company/radware">Radware</a></h4>
+    </div>'''
+    jobs = extract_jobs_from_html(html, "LinkedIn", "https://www.linkedin.com", is_aggregator=True)
+    assert any(j["site"] == "Radware" for j in jobs)
+
+def test_extract_finds_company_on_indeed_shaped_page():
+    html = '''
+    <div>
+      <h2><a href="/rc/clk?jk=abc123">QA Student</a></h2>
+      <span data-testid="company-name">Amdocs</span>
+    </div>'''
+    jobs = extract_jobs_from_html(html, "Indeed", "https://il.indeed.com", is_aggregator=True)
+    assert any(j["site"] == "Amdocs" for j in jobs)
+
+def test_extract_finds_company_on_glassdoor_shaped_page():
+    html = '''
+    <div>
+      <a href="/job/view/456">Junior Backend Engineer</a>
+      <span class="EmployerProfile_compactEmployerName__9MGcV">Applied Materials</span>
+    </div>'''
+    jobs = extract_jobs_from_html(html, "GlassDoor", "https://www.glassdoor.com", is_aggregator=True)
+    assert any(j["site"] == "Applied Materials" for j in jobs)
+
+def test_extract_falls_back_to_site_name_when_no_company_found():
+    html = '<a href="/jobs/view/789">Backend Intern</a>'
+    jobs = extract_jobs_from_html(html, "LinkedIn", "https://www.linkedin.com", is_aggregator=True)
+    assert any(j["site"] == "LinkedIn" for j in jobs)
+
+def test_extract_ignores_company_markup_when_not_an_aggregator():
+    """A company's own career page shouldn't have its job's 'site' overridden by stray markup."""
+    html = '''
+    <div>
+      <a href="/careers/123">Backend Intern</a>
+      <span class="subtitle">Some unrelated widget text</span>
+    </div>'''
+    jobs = extract_jobs_from_html(html, "Wiz", "https://www.wiz.io")  # is_aggregator defaults False
+    assert any(j["site"] == "Wiz" for j in jobs)
+
+
+# ===========================================================================
+# Tracking-param extension: ephemeral LinkedIn/Indeed params
+# ===========================================================================
+
+def test_linkedin_position_and_pagenum_stripped():
+    a = canonical_link("https://il.linkedin.com/jobs/view/automation-student-at-radware-4452294600?position=60&pageNum=0&refId=x&trackingId=y")
+    b = canonical_link("https://il.linkedin.com/jobs/view/automation-student-at-radware-4452294600?position=57&pageNum=0&refId=z&trackingId=w")
+    assert a == b
+
+def test_indeed_bb_and_xkcb_stripped():
+    a = canonical_link("https://il.indeed.com/rc/clk?jk=8ceedeece4e45355&bb=aaa&xkcb=bbb&fccid=be72bcf1")
+    b = canonical_link("https://il.indeed.com/rc/clk?jk=8ceedeece4e45355&bb=ccc&xkcb=ddd&fccid=be72bcf1")
+    assert a == b
+
+def test_indeed_different_jk_still_differs():
+    a = canonical_link("https://il.indeed.com/rc/clk?jk=aaaaaaaaaaaaaaaa&bb=x&xkcb=y")
+    b = canonical_link("https://il.indeed.com/rc/clk?jk=bbbbbbbbbbbbbbbb&bb=x&xkcb=y")
+    assert a != b
+
+
+# ===========================================================================
+# Company name normalization / already-covered matching
+# ===========================================================================
+
+def test_normalize_strips_suffix_and_punctuation():
+    assert _normalize_company_name("Check Point Software Technologies") == "check point"
+    assert _normalize_company_name("Wiz, Inc.") == "wiz"
+
+def test_company_already_covered_exact_match():
+    assert _company_already_covered("Radware", {"Radware", "SAP"}) is True
+
+def test_company_already_covered_substring_match():
+    assert _company_already_covered("Amazon Web Services", {"Amazon"}) is True
+    assert _company_already_covered("Check Point", {"Check Point Software Technologies"}) is True
+
+def test_company_not_covered_when_unrelated():
+    assert _company_already_covered("Some Random Startup", {"Radware", "SAP", "Wiz"}) is False
+
+def test_company_short_names_dont_false_match():
+    """Guards against a short name trivially substring-matching everything."""
+    assert _company_already_covered("AU", {"Australian Something Corp"}) is False
+
+def test_company_already_covered_empty_known_set():
+    assert _company_already_covered("Radware", set()) is False
