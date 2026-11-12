@@ -967,6 +967,10 @@ def job_identity(job: dict, canon: str = None) -> str:
     Pass canon="" to force the metadata identity — assign_job_ids() does that
     for sites whose links turn out not to discriminate between openings.
     """
+    # The ATS's own posting ID, scoped by company so two companies whose IDs
+    # happen to collide (small integers are common) stay distinct.
+    if canon is None and job.get("external_id"):
+        return f"ext|{_norm_text(job.get('site', ''))}|{job['external_id']}"
     if canon is None:
         canon = canonical_link(job.get("link", ""), job.get("source_url", ""))
     if canon:
@@ -977,6 +981,18 @@ def job_identity(job: dict, canon: str = None) -> str:
 
 def job_id(job: dict, canon: str = None) -> str:
     return hashlib.md5(job_identity(job, canon).encode()).hexdigest()
+
+
+def _link_job_id(job: dict, canon: str = None) -> str:
+    """The pre-external-ID scheme (link / metadata) — kept to recognise jobs
+    stored under their old ID."""
+    if canon is None:
+        canon = canonical_link(job.get("link", ""), job.get("source_url", ""))
+    if canon:
+        identity = f"url|{canon}"
+    else:
+        identity = "meta|" + "|".join(_norm_text(job.get(k, "")) for k in ("site", "title", "location"))
+    return hashlib.md5(identity.encode()).hexdigest()
 
 
 def assign_job_ids(jobs: list[dict], context_jobs: list[dict] = None) -> None:
@@ -1006,7 +1022,11 @@ def assign_job_ids(jobs: list[dict], context_jobs: list[dict] = None) -> None:
         canon = canonical_link(job.get("link", ""), job.get("source_url", ""))
         if canon and len(titles_per_canon.get(canon, ())) > 1:
             canon = ""  # link is shared across distinct openings — not identifying
-        job["id"] = job_id(job, canon)
+        if job.get("external_id"):
+            job["id"] = job_id(job)
+            job["legacy_id"] = _link_job_id(job, canon)  # lets run_scraper migrate stored rows
+        else:
+            job["id"] = job_id(job, canon)
 
 # ---------------------------------------------------------------------------
 # CV Parsing & Job Fit Scoring
@@ -1653,6 +1673,7 @@ def run_scraper():
     aggregator_skipped = 0      # Aggregator jobs dropped — company already scraped directly
     currently_live_ids = set()  # Track job IDs found in this scan
     existing_seen_ids = []  # Track IDs of jobs we've already seen
+    id_migrations = {}      # old link-based job ID -> external-ID-based one
 
     # --- Parallel scraping with ThreadPoolExecutor ---
     max_workers = config.get("max_workers", 5)
@@ -1749,6 +1770,12 @@ def run_scraper():
         new_jobs = []
         for job in matching:
             jid = job["id"]
+            legacy = job.get("legacy_id")
+            if jid not in seen_job_ids and legacy in seen_job_ids:
+                # Stored under the old link-based ID: same job, just re-key it
+                id_migrations[legacy] = jid
+                seen_job_ids.discard(legacy)
+                seen_job_ids.add(jid)
             if jid in seen_job_ids:
                 existing_seen_ids.append(jid)
             else:
@@ -1763,6 +1790,9 @@ def run_scraper():
 
     # Save data
     store.save_new_jobs(all_new_jobs)
+    if id_migrations:
+        logger.info(f"🔁 Re-keying {len(id_migrations)} stored job(s) to external IDs")
+        store.rename_job_ids(id_migrations)
     store.update_last_seen(existing_seen_ids)
     store.delete_stale_jobs(currently_live_ids)
 

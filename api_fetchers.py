@@ -37,14 +37,19 @@ _TIMEOUT = 20
 _MAX_PAGES = 25  # safety cap on pagination per site
 
 
-def _job(title, link, site, location="", posted_date=""):
-    return {
+def _job(title, link, site, location="", posted_date="", external_id=None):
+    """Normalized job. external_id is the ATS's own posting ID when the API
+    provides one (job_scraper hashes it together with the company name)."""
+    job = {
         "title": (title or "").strip(),
         "link": link or "",
         "site": site,
         "location": (location or "").strip(),
         "posted_date": posted_date or "",
     }
+    if external_id not in (None, ""):
+        job["external_id"] = str(external_id).strip()
+    return job
 
 
 def _request(method, url, **kwargs):
@@ -103,6 +108,9 @@ def _fetch_workday(url, site_name):
                 site_name,
                 j.get("locationsText", ""),
                 j.get("postedOn", ""),
+                # bulletFields[0] is the requisition number; externalPath's slug
+                # changes whenever the title does
+                (j.get("bulletFields") or [None])[0] or j.get("externalPath"),
             ))
         offset += len(postings)
         if not postings or offset >= data.get("total", 0):
@@ -127,7 +135,7 @@ def _fetch_greenhouse(url, site_name):
     return [
         _job(j.get("title"), j.get("absolute_url"), site_name,
              (j.get("location") or {}).get("name", ""),
-             (j.get("updated_at") or "")[:10])
+             (j.get("updated_at") or "")[:10], j.get("id"))
         for j in r.json().get("jobs", [])
     ]
 
@@ -162,7 +170,7 @@ def _fetch_comeet(url, site_name):
         jobs.append(_job(
             pos.get("name"),
             pos.get("url_comeet_hosted_page") or pos.get("url_active_page"),
-            site_name, location, (pos.get("time_updated") or "")[:10],
+            site_name, location, (pos.get("time_updated") or "")[:10], pos.get("uid"),
         ))
     return jobs
 
@@ -197,7 +205,7 @@ def _eightfold(base, domain, query, site_name):
                 posted = datetime.fromtimestamp(pos["postedTs"], timezone.utc).strftime("%Y-%m-%d")
             jobs.append(_job(
                 pos.get("name"), f"{base}{pos.get('positionUrl', '')}", site_name,
-                ", ".join(pos.get("locations") or []), posted,
+                ", ".join(pos.get("locations") or []), posted, pos.get("id"),
             ))
         start += len(positions)
         if not positions or start >= data.get("count", 0):
@@ -247,6 +255,7 @@ def _oracle(base, site, location_id, keyword, site_name):
                 req.get("Title"),
                 f"{base}/hcmUI/CandidateExperience/en/sites/{site}/job/{req.get('Id')}",
                 site_name, req.get("PrimaryLocation", ""), req.get("PostedDate", ""),
+                req.get("Id"),
             ))
         offset += len(reqs)
         if not reqs or offset >= item.get("TotalJobsCount", 0):
@@ -275,7 +284,7 @@ def _fetch_amazon(url, site_name):
             jobs.append(_job(
                 j.get("title"), f"https://www.amazon.jobs{j.get('job_path', '')}",
                 site_name, j.get("normalized_location") or j.get("location", ""),
-                j.get("posted_date", ""),
+                j.get("posted_date", ""), j.get("id_icims") or j.get("id"),
             ))
         offset += len(batch)
         if not batch or offset >= data.get("hits", 0):
@@ -325,6 +334,7 @@ def _fetch_linkedin(url, site_name):
                 company.get_text(strip=True) if company else site_name,
                 loc.get_text(strip=True) if loc else "",
                 when.get("datetime", "") if when else "",
+                (re.search(r"(\d{6,})/?$", link) or [None, None])[1],
             ))
     if not jobs:
         return None  # nothing parsed — let the browser scraper try
@@ -348,7 +358,7 @@ def _fetch_lever(url, site_name):
         _job(j.get("text"), j.get("hostedUrl"), site_name,
              (j.get("categories") or {}).get("location", ""),
              datetime.fromtimestamp(j["createdAt"] / 1000, timezone.utc).strftime("%Y-%m-%d")
-             if j.get("createdAt") else "")
+             if j.get("createdAt") else "", j.get("id"))
         for j in r.json()
     ]
 
@@ -381,7 +391,8 @@ def _fetch_json(spec, site_name):
     spec keys: url, [method, body, params], list (dotted path to the job array,
     "" for a top-level array), title, link | link_template ("{id}" placeholders
     filled from each job's top-level fields), location (path or list of paths),
-    date, [site] (path to a per-job company name), [paginate] (offset paging).
+    date, [id] (path to the posting's own ID), [site] (path to a per-job company
+    name), [paginate] (offset paging).
     """
     method = spec.get("method", "GET").upper()
     page = spec.get("paginate")  # {"param": "start", "total": "count"}: offset paging
@@ -419,6 +430,7 @@ def _fetch_json(spec, site_name):
             html.unescape(str(_dig(it, spec["title"]) or "")), link,
             (_dig(it, spec["site"]) if spec.get("site") else None) or site_name,
             loc, str(_dig(it, spec["date"]) or "")[:10] if spec.get("date") else "",
+            _dig(it, spec["id"]) if spec.get("id") else None,
         ))
     return jobs
 
@@ -456,7 +468,8 @@ def _fetch_phenom(page_url, site_name):
         for j in batch:
             jobs.append(_job(j.get("title"), j.get("applyUrl"), site_name,
                              j.get("cityStateCountry") or j.get("location", ""),
-                             (j.get("postedDate") or "")[:10]))
+                             (j.get("postedDate") or "")[:10],
+                             j.get("jobId") or j.get("jobSeqNo")))
         offset += len(batch)
         if not batch or offset >= (res.get("totalHits") or 0):
             break
@@ -466,20 +479,20 @@ def _fetch_phenom(page_url, site_name):
 def _greenhouse_spec(token):
     return {"type": "json", "url": f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs",
             "list": "jobs", "title": "title", "link": "absolute_url",
-            "location": "location.name", "date": "updated_at"}
+            "location": "location.name", "date": "updated_at", "id": "id"}
 
 
 def _comeet_spec(uid, token):
     return {"type": "json", "url": f"https://www.comeet.co/careers-api/2.0/company/{uid}/positions",
             "params": {"token": token, "details": "false"}, "list": "", "title": "name",
             "link": "url_active_page", "location": ["location.city", "location.name"],
-            "date": "time_updated"}
+            "date": "time_updated", "id": "uid"}
 
 
 def _ashby_spec(board):
     return {"type": "json", "url": f"https://api.ashbyhq.com/posting-api/job-board/{board}",
             "list": "jobs", "title": "title", "link": "jobUrl", "location": "location",
-            "date": "publishedAt"}
+            "date": "publishedAt", "id": "id"}
 
 
 def _fetch_taleo(spec, site_name):
@@ -508,7 +521,8 @@ def _fetch_taleo(spec, site_name):
             col = req.get("column") or ["", "", ""]
             loc = col[1].strip('[]').replace('"', '') if len(col) > 1 else ""
             jobs.append(_job(col[0], f"{base}/careersection/{section}/jobdetail.ftl?job={req.get('contestNo')}",
-                             site_name, loc, col[2] if len(col) > 2 else ""))
+                             site_name, loc, col[2] if len(col) > 2 else "",
+                             req.get("contestNo")))
         paging = data.get("pagingData") or {}
         if not reqs or page * paging.get("pageSize", 25) >= paging.get("totalCount", 0):
             break
@@ -546,7 +560,8 @@ def _fetch_csod(spec, site_name):
             jobs.append(_job(
                 req.get("displayJobTitle"),
                 f"{base}/ux/ats/careersite/{site_id}/home/requisition/{req.get('requisitionId')}?c={spec['corp']}",
-                site_name, loc, req.get("postingEffectiveDate", "")))
+                site_name, loc, req.get("postingEffectiveDate", ""),
+                req.get("requisitionId")))
         if not reqs or number * 25 >= data.get("totalCount", 0):
             break
         number += 1

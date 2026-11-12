@@ -58,6 +58,10 @@ class JobStore(ABC):
         """Bump last_seen for jobs that showed up again this scan."""
 
     @abstractmethod
+    def rename_job_ids(self, mapping: dict):
+        """Re-key stored jobs: {old_id: new_id}. Keeps first_seen and notified."""
+
+    @abstractmethod
     def delete_stale_jobs(self, keep_ids: set):
         """Purge jobs no longer found on any site."""
 
@@ -87,6 +91,9 @@ class SupabaseJobStore(JobStore):
 
     def update_last_seen(self, job_ids):
         db.update_last_seen(job_ids)
+
+    def rename_job_ids(self, mapping):
+        db.rename_job_ids(mapping)
 
     def delete_stale_jobs(self, keep_ids):
         db.delete_stale_jobs(keep_ids)
@@ -150,6 +157,12 @@ class LocalFileJobStore(JobStore):
         for jid in job_ids:
             if jid in self._seen_jobs:
                 self._seen_jobs[jid]["last_seen"] = now
+        self._save_seen_jobs()
+
+    def rename_job_ids(self, mapping):
+        for old, new in mapping.items():
+            if old in self._seen_jobs and new not in self._seen_jobs:
+                self._seen_jobs[new] = self._seen_jobs.pop(old)
         self._save_seen_jobs()
 
     def delete_stale_jobs(self, keep_ids):

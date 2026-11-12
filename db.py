@@ -265,6 +265,26 @@ def update_last_seen(job_ids: list[str]):
         pass  # Non-critical
 
 
+def rename_job_ids(mapping: dict):
+    """Change the primary key of stored jobs ({old_id: new_id}), keeping every
+    other column. A row whose new ID already exists is dropped instead."""
+    for old, new in mapping.items():
+        try:
+            resp = requests.patch(
+                f"{SUPABASE_URL}/rest/v1/jobs",
+                headers=_headers(),
+                params={"id": f"eq.{old}"},
+                json={"id": new},
+            )
+            if resp.status_code == 409:  # new ID already present
+                requests.delete(f"{SUPABASE_URL}/rest/v1/jobs", headers=_headers(),
+                                params={"id": f"eq.{old}"})
+            elif resp.status_code not in (200, 204):
+                logger.error(f"DB: Failed to rename job {old}: {resp.status_code} {resp.text}")
+        except Exception as e:
+            logger.error(f"DB: Failed to rename job {old}: {e}")
+
+
 def delete_stale_jobs(keep_ids: set, max_age_days: int = 30):
     """Delete jobs not seen in recent scans and older than max_age_days."""
     try:

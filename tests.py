@@ -779,7 +779,7 @@ def test_fetch_taleo_parses_columns(monkeypatch):
     monkeypatch.setattr(api_fetchers, "_request", lambda *a, **k: Resp())
     jobs = api_fetchers.fetch_via_api("", "Acme", {"type": "taleo", "base": "https://a.taleo.net"})
     assert jobs == [{"title": "QA Intern", "link": "https://a.taleo.net/careersection/ex/jobdetail.ftl?job=26A",
-                     "site": "Acme", "location": "IL-Haifa", "posted_date": "Nov 1, 2026"}]
+                     "site": "Acme", "location": "IL-Haifa", "posted_date": "Nov 1, 2026", "external_id": "26A"}]
 
 
 def test_scrape_site_falls_back_to_scraping_on_empty_api(monkeypatch):
@@ -814,3 +814,43 @@ def test_detect_count_drop_ignores_normal_small_zero_and_short_history():
     assert db.detect_count_drop([20, 22, 18, 21], 0) is None    # empty is reported separately
     assert db.detect_count_drop([20, 22], 2) is None            # not enough history
     assert db.detect_count_drop([4, 4, 4, 4], 1) is None        # tiny site
+
+
+# ---------------------------------------------------------------------------
+# External (ATS) job IDs
+# ---------------------------------------------------------------------------
+
+def test_external_id_scoped_by_company():
+    a = {"title": "Dev", "link": "https://x.com/1", "site": "Acme", "external_id": "42"}
+    b = {"title": "Dev", "link": "https://x.com/1", "site": "Globex", "external_id": "42"}
+    assign_job_ids([a, b])
+    assert a["id"] != b["id"]  # same external ID, different company
+
+
+def test_external_id_survives_link_and_title_change():
+    a = {"title": "Dev", "link": "https://x.com/old", "site": "Acme", "external_id": "42"}
+    b = {"title": "Senior Dev", "link": "https://x.com/new", "site": "Acme ", "external_id": "42"}
+    assign_job_ids([a]); assign_job_ids([b])
+    assert a["id"] == b["id"]
+
+
+def test_external_id_keeps_legacy_link_id():
+    j = {"title": "Dev", "link": "https://x.com/1", "site": "Acme", "external_id": "42"}
+    plain = {"title": "Dev", "link": "https://x.com/1", "site": "Acme"}
+    assign_job_ids([j]); assign_job_ids([plain])
+    assert j["legacy_id"] == plain["id"] and j["id"] != plain["id"]
+
+
+def test_job_helper_includes_external_id_only_when_given():
+    from api_fetchers import _job
+    assert _job("t", "l", "s", external_id=7)["external_id"] == "7"
+    assert "external_id" not in _job("t", "l", "s")
+
+
+def test_local_store_rename_job_ids(tmp_path, monkeypatch):
+    from job_store import LocalFileJobStore
+    store = LocalFileJobStore({})
+    monkeypatch.setattr(store, "_save_seen_jobs", lambda: None)
+    store._seen_jobs = {"old": {"title": "x"}}
+    store.rename_job_ids({"old": "new"})
+    assert list(store._seen_jobs) == ["new"]

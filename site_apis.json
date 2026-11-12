@@ -13,7 +13,8 @@
    "location.city",
    "location.name"
   ],
-  "date": "time_updated"
+  "date": "time_updated",
+  "id": "uid"
  },
  "Align Technology": {
   "type": "json",
@@ -27,7 +28,8 @@
   "location": [
    "location.city",
    "location.name"
-  ]
+  ],
+  "id": "id"
  },
  "Cornerstone": {
   "type": "csod",
@@ -40,7 +42,8 @@
   "list": "",
   "title": "title",
   "link": "link",
-  "location": "office_textual"
+  "location": "office_textual",
+  "id": "id"
  },
  "NSO Group": {
   "type": "awsm",
@@ -53,7 +56,8 @@
   "title": "title",
   "link": "absolute_url",
   "location": "location.name",
-  "date": "updated_at"
+  "date": "updated_at",
+  "id": "id"
  },
  "Natural Intelligence": {
   "type": "comeet",
@@ -85,7 +89,8 @@
   "title": "title",
   "link": "absolute_url",
   "location": "location.name",
-  "date": "updated_at"
+  "date": "updated_at",
+  "id": "id"
  },
  "GE Healthcare": {
   "type": "workday",
@@ -152,7 +157,8 @@
    "_source.field_keyword_19",
    "_source.field_keyword_05"
   ],
-  "date": "_source.dcdate"
+  "date": "_source.dcdate",
+  "id": "_id"
  },
  "Philips": {
   "type": "workday",
@@ -185,7 +191,8 @@
    "location.city",
    "location.name"
   ],
-  "date": "time_updated"
+  "date": "time_updated",
+  "id": "uid"
  },
  "Upwind": {
   "type": "comeet",
@@ -206,7 +213,8 @@
   "location": [
    "location.city",
    "location.name"
-  ]
+  ],
+  "id": "uid"
  },
  "Playtika": {
   "type": "json",
@@ -215,7 +223,8 @@
   "title": "title",
   "link": "absolute_url",
   "location": "location.name",
-  "date": "updated_at"
+  "date": "updated_at",
+  "id": "id"
  },
  "SciPlay": {
   "type": "workday",
@@ -228,7 +237,8 @@
   "title": "title",
   "link": "absolute_url",
   "location": "location.name",
-  "date": "updated_at"
+  "date": "updated_at",
+  "id": "id"
  },
  "Next Insurance": {
   "type": "json",
@@ -237,7 +247,8 @@
   "title": "title",
   "link": "absolute_url",
   "location": "location.name",
-  "date": "updated_at"
+  "date": "updated_at",
+  "id": "id"
  },
  "Unit": {
   "type": "json",
@@ -246,7 +257,8 @@
   "title": "title",
   "link": "jobUrl",
   "location": "location",
-  "date": "publishedAt"
+  "date": "publishedAt",
+  "id": "id"
  },
  "Navan": {
   "type": "json",
@@ -255,7 +267,8 @@
   "title": "title",
   "link": "absolute_url",
   "location": "location.name",
-  "date": "updated_at"
+  "date": "updated_at",
+  "id": "id"
  },
  "Microsoft": {
   "type": "eightfold",
@@ -283,7 +296,8 @@
   "link_template": "https://elbitsystemscareer.com/?locale=en_US&jobId={jobId}",
   "location": "area",
   "date": "openDate",
-  "site": "employerName"
+  "site": "employerName",
+  "id": "jobId"
  },
  "Teva": {
   "type": "json",
@@ -300,7 +314,8 @@
   "paginate": {
    "param": "start",
    "total": "count"
-  }
+  },
+  "id": "id"
  },
  "Develeap": {
   "type": "comeet",
@@ -318,7 +333,8 @@
   "title": "title",
   "link": "absolute_url",
   "location": "location.name",
-  "date": "updated_at"
+  "date": "updated_at",
+  "id": "id"
  },
  "Wiliot": {
   "type": "comeet",
