@@ -1328,12 +1328,14 @@ def _categorize_job(job: dict) -> str:
 
 
 def build_email_html(new_jobs: list[dict], config: dict,
-                     failed_sites: list[str] = None, empty_sites: list[str] = None) -> str:
+                     failed_sites: list[str] = None, empty_sites: list[str] = None,
+                     dropped_sites: list[dict] = None) -> str:
     role_kws = config.get("role_keywords", [])
     field_kws = config.get("field_keywords", [])
     has_cv = bool(config.get("cv_path"))
     failed_sites = failed_sites or []
     empty_sites = empty_sites or []
+    dropped_sites = dropped_sites or []
 
     def _score_badge(score):
         """Return an HTML badge for the fit score with color coding."""
@@ -1528,8 +1530,33 @@ def build_email_html(new_jobs: list[dict], config: dict,
             </table>
         </div>"""
 
+    # Sites whose job count dropped sharply (likely changed HTML, scraper now grabbing junk)
+    drop_section = ""
+    if dropped_sites:
+        drop_rows = "".join(f"""
+            <tr>
+                <td style="padding:6px 12px;border-bottom:1px solid #fde68a;">{d['name']}</td>
+                <td style="padding:6px 12px;border-bottom:1px solid #fde68a;">
+                    <span style="background:#fef3c7;padding:2px 8px;border-radius:4px;font-size:11px;color:#92400e;">📉 {d['count']} jobs (typically ~{d['baseline']})</span>
+                </td>
+            </tr>""" for d in dropped_sites)
+        drop_section = f"""
+        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:16px;margin-top:24px;">
+            <h3 style="margin:0 0 12px;font-size:16px;color:#92400e;">📉 {len(dropped_sites)} Site(s) With a Sharp Drop in Jobs</h3>
+            <p style="margin:0 0 12px;font-size:13px;color:#78350f;">These sites returned far fewer jobs than usual — their page structure may have changed. Worth checking manually.</p>
+            <table style="border-collapse:collapse;width:100%;font-size:13px;">
+                <thead>
+                    <tr>
+                        <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #fcd34d;">Company</th>
+                        <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #fcd34d;">Jobs found</th>
+                    </tr>
+                </thead>
+                <tbody>{drop_rows}</tbody>
+            </table>
+        </div>"""
+
     # Count by category for the header
-    student_count = len([j for j in new_jobs if _categorize_job(j) == "student"])
+    student_count =len([j for j in new_jobs if _categorize_job(j) == "student"])
     junior_count = len([j for j in new_jobs if _categorize_job(j) == "junior"])
     category_summary = []
     if student_count:
@@ -1548,6 +1575,7 @@ def build_email_html(new_jobs: list[dict], config: dict,
         </div>
         {jobs_section}
         {problem_section}
+        {drop_section}
         <p style="margin-top:16px;color:#999;font-size:11px;">
             Sent by Job Scraper v2 • {datetime.now().strftime('%Y-%m-%d %H:%M')}
         </p>
@@ -1619,7 +1647,8 @@ def run_scraper():
     errors = 0
     failed_sites = []       # Sites that threw exceptions
     empty_sites = []        # Sites that returned 0 raw jobs (likely broken)
-    discovered_scraped = 0      # Discovered (search-result) sites scraped this run
+    dropped_sites = []      # Curated sites whose job count fell sharply vs. their history
+    discovered_scraped = 0     # Discovered (search-result) sites scraped this run
     discovered_with_jobs = 0    # ...of which had ≥1 raw job
     aggregator_skipped = 0      # Aggregator jobs dropped — company already scraped directly
     currently_live_ids = set()  # Track job IDs found in this scan
@@ -1672,7 +1701,9 @@ def run_scraper():
 
         # Update site status
         status = "ok" if jobs else "empty"
-        store.update_site_status(url_entry["name"], status, len(jobs))
+        drop = store.update_site_status(url_entry["name"], status, len(jobs))
+        if drop and not is_discovered:
+            dropped_sites.append({"name": url_entry["name"], **drop})
 
         if is_discovered:
             # Discovered (search-result) sites are speculative — most won't have
@@ -1756,6 +1787,11 @@ def run_scraper():
         for name in empty_sites:
             logger.warning(f"     ⚠️  {name}")
 
+    if dropped_sites:
+        logger.warning(f"📉 SHARP DROP ({len(dropped_sites)}) — job count far below recent typical (HTML may have changed):")
+        for d in dropped_sites:
+            logger.warning(f"     📉 {d['name']}: {d['count']} jobs (typically ~{d['baseline']})")
+
     # --- CV Fit Scoring ---
     cv_data = load_cv_skills(config)
     if all_new_jobs and cv_data and cv_data.get("skills"):
@@ -1763,14 +1799,16 @@ def run_scraper():
 
     # Send notification
     problem_sites = failed_sites + empty_sites
-    if all_new_jobs or problem_sites:
-        logger.info(f"🎉 Sending email with {len(all_new_jobs)} new job(s), {len(problem_sites)} problem site(s)...")
-        email_html = build_email_html(all_new_jobs, config, failed_sites, empty_sites)
+    if all_new_jobs or problem_sites or dropped_sites:
+        logger.info(f"🎉 Sending email with {len(all_new_jobs)} new job(s), {len(problem_sites)} problem site(s), {len(dropped_sites)} dropped site(s)...")
+        email_html = build_email_html(all_new_jobs, config, failed_sites, empty_sites, dropped_sites)
         subject_parts = []
         if all_new_jobs:
             subject_parts.append(f"🔔 {len(all_new_jobs)} New Job(s)")
         if problem_sites:
             subject_parts.append(f"⚠️ {len(problem_sites)} Site(s) Failed")
+        if dropped_sites:
+            subject_parts.append(f"📉 {len(dropped_sites)} Site(s) Dropped")
         send_email(config, " | ".join(subject_parts) + " – Job Scraper", email_html)
         for job in all_new_jobs:
             logger.info(f"  NEW: {job['title']} @ {job['site']}")

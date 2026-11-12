@@ -89,21 +89,84 @@ def get_search_queries() -> list[dict]:
         return []
 
 
-def update_site_status(name: str, status: str, job_count: int = 0):
-    """Update a site's last_scraped timestamp and status."""
+# Sharp-drop detection: a site whose job count falls far below its recent
+# typical (median) count has probably changed its HTML and is now returning
+# junk (e.g. navigation links) instead of real listings — "empty" can't catch it.
+HISTORY_LEN = 10        # how many recent runs feed the baseline
+MIN_HISTORY = 3         # need at least this many past runs to judge
+MIN_BASELINE = 5        # ignore tiny sites — 2 → 1 jobs isn't a signal
+DROP_RATIO = 0.5        # flag when count <= baseline * this
+
+
+def detect_count_drop(history: list[int], job_count: int) -> dict | None:
+    """
+    Return {"baseline": N, "count": M} if `job_count` is a sharp drop versus the
+    median of `history` (previous successful runs), else None. A count of 0 is
+    not handled here — that's already reported as an "empty" site.
+    """
+    if job_count <= 0 or len(history) < MIN_HISTORY:
+        return None
+    ordered = sorted(history)
+    mid = len(ordered) // 2
+    baseline = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+    baseline = int(round(baseline))
+    if baseline >= MIN_BASELINE and job_count <= baseline * DROP_RATIO:
+        return {"baseline": baseline, "count": job_count}
+    return None
+
+
+def _get_count_state(name: str):
+    """Return (count_history, drop_since) for a site, or None if the columns don't exist yet."""
+    resp = requests.get(
+        f"{SUPABASE_URL}/rest/v1/sites",
+        headers=_headers(),
+        params={"select": "count_history,drop_since", "name": f"eq.{name}"},
+    )
+    if not resp.ok:
+        return None  # migration not applied yet
+    rows = resp.json()
+    if not rows:
+        return None
+    return list(rows[0].get("count_history") or []), rows[0].get("drop_since")
+
+
+def update_site_status(name: str, status: str, job_count: int = 0) -> dict | None:
+    """
+    Update a site's last_scraped timestamp and status, and track its job-count
+    history. Returns {"baseline", "count"} if this run is a sharp drop, else None.
+    """
     try:
-        requests.patch(
+        now = datetime.now(timezone.utc).isoformat()
+        payload = {"last_scraped": now, "last_status": status, "job_count": job_count}
+        extra = {}
+        drop = None
+
+        if status == "ok":
+            state = _get_count_state(name)
+            if state is not None:
+                history, drop_since = state
+                drop = detect_count_drop(history, job_count)
+                extra["count_history"] = (history + [job_count])[-HISTORY_LEN:]
+                extra["drop_baseline"] = drop["baseline"] if drop else None
+                extra["drop_since"] = (drop_since or now) if drop else None
+
+        resp = requests.patch(
             f"{SUPABASE_URL}/rest/v1/sites",
             headers=_headers(),
             params={"name": f"eq.{name}"},
-            json={
-                "last_scraped": datetime.now(timezone.utc).isoformat(),
-                "last_status": status,
-                "job_count": job_count,
-            },
+            json={**payload, **extra},
         )
+        if extra and not resp.ok:
+            # Never lose the basic status update because of the extra columns
+            requests.patch(
+                f"{SUPABASE_URL}/rest/v1/sites",
+                headers=_headers(),
+                params={"name": f"eq.{name}"},
+                json=payload,
+            )
+        return drop
     except Exception:
-        pass  # Non-critical, don't crash the scraper
+        return None  # Non-critical, don't crash the scraper
 
 
 # ---------------------------------------------------------------------------
@@ -264,15 +327,17 @@ def get_jobs(limit: int = 300) -> list[dict]:
 def get_sites_status() -> list[dict]:
     """Fetch site statuses for the dashboard."""
     try:
-        resp = requests.get(
-            f"{SUPABASE_URL}/rest/v1/sites",
-            headers=_headers(),
-            params={
-                "select": "name,url,source,last_scraped,last_status,job_count",
-                "order": "name.asc",
-                "limit": 1000,
-            },
-        )
+        base_cols = "name,url,source,last_scraped,last_status,job_count"
+        resp = None
+        # Try with the drop-tracking columns first; fall back if the migration isn't applied.
+        for cols in (base_cols + ",drop_baseline,drop_since", base_cols):
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/sites",
+                headers=_headers(),
+                params={"select": cols, "order": "name.asc", "limit": 1000},
+            )
+            if resp.ok:
+                break
         resp.raise_for_status()
         return resp.json()
     except Exception as e:

@@ -799,3 +799,18 @@ def test_scrape_site_uses_api_jobs_when_present(monkeypatch):
                         lambda url: (_ for _ in ()).throw(AssertionError("should not scrape")))
     jobs = job_scraper.scrape_site({"url": "https://x.example/careers", "name": "X"}, {})
     assert jobs == [{"title": "API"}]
+
+
+# --- sharp-drop detection ---
+
+def test_detect_count_drop_flags_sharp_fall():
+    import db
+    assert db.detect_count_drop([20, 22, 18, 21], 6) == {"baseline": 20, "count": 6}
+
+
+def test_detect_count_drop_ignores_normal_small_zero_and_short_history():
+    import db
+    assert db.detect_count_drop([20, 22, 18, 21], 15) is None   # mild dip
+    assert db.detect_count_drop([20, 22, 18, 21], 0) is None    # empty is reported separately
+    assert db.detect_count_drop([20, 22], 2) is None            # not enough history
+    assert db.detect_count_drop([4, 4, 4, 4], 1) is None        # tiny site

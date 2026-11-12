@@ -41,8 +41,9 @@ class JobStore(ABC):
         """Return [{"name":..., "query":...}, ...]."""
 
     @abstractmethod
-    def update_site_status(self, name: str, status: str, job_count: int = 0):
-        """Record the outcome of scraping one site."""
+    def update_site_status(self, name: str, status: str, job_count: int = 0) -> dict | None:
+        """Record the outcome of scraping one site. Returns {"baseline", "count"}
+        if the job count dropped sharply versus its recent history, else None."""
 
     @abstractmethod
     def get_seen_job_ids(self) -> set:
@@ -76,7 +77,7 @@ class SupabaseJobStore(JobStore):
         return db.get_search_queries()
 
     def update_site_status(self, name, status, job_count=0):
-        db.update_site_status(name, status, job_count)
+        return db.update_site_status(name, status, job_count)
 
     def get_seen_job_ids(self):
         return db.get_seen_job_ids()
@@ -121,7 +122,7 @@ class LocalFileJobStore(JobStore):
         return self._config.get("general_search_queries", [])
 
     def update_site_status(self, name, status, job_count=0):
-        pass  # Local-file mode has never tracked per-site history
+        return None  # Local-file mode has never tracked per-site history
 
     # -- jobs --
 

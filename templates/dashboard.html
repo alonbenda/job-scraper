@@ -50,6 +50,14 @@
   .site-list span { display: inline-block; background: #f1f5f9; border-radius: 4px; padding: 2px 6px; margin: 2px; }
   .site-list span.discovered-tag { opacity: .6; }
 
+  .drop-card h2 { margin: 0 0 4px; font-size: 15px; }
+  .drop-card .hint { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .drop-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid #eee; font-size: 13px; }
+  .drop-row .name { font-weight: 600; flex: 1; min-width: 140px; }
+  .drop-row .nums { background: #fef3c7; color: #92400e; border-radius: 4px; padding: 2px 8px; font-size: 12px; }
+  .drop-row .since { color: var(--muted); font-size: 12px; }
+  .drop-row a { color: #2563eb; text-decoration: none; font-size: 12px; }
+
   .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   .filters input, .filters select {
     padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
@@ -114,6 +122,12 @@
   <div class="card">
     <div class="stats" id="statsRow"></div>
     <div class="site-list" id="siteList"></div>
+  </div>
+
+  <div class="card drop-card">
+    <h2>📉 Sharp drops in job count</h2>
+    <div class="hint">Sites that returned far fewer jobs than their recent typical count — their HTML may have changed. Clears automatically once the count recovers.</div>
+    <div id="dropList"></div>
   </div>
 
   <div class="card">
@@ -183,6 +197,24 @@ function isNew(job) {
   return new Date(job.first_seen) > new Date(lastViewedAt);
 }
 
+function renderDrops() {
+  const drops = sites
+    .filter(s => s.source !== 'discovered' && s.last_status === 'ok' && s.drop_since)
+    .sort((a, b) => new Date(b.drop_since) - new Date(a.drop_since));
+  const el = document.getElementById('dropList');
+  el.innerHTML = drops.length
+    ? drops.map(s => {
+        const pct = s.drop_baseline ? Math.round((1 - s.job_count / s.drop_baseline) * 100) : null;
+        return `<div class="drop-row">
+          <span class="name">${s.name}</span>
+          <span class="nums">${s.job_count} jobs · typically ~${s.drop_baseline}${pct !== null ? ` (−${pct}%)` : ''}</span>
+          <span class="since">since ${new Date(s.drop_since).toLocaleDateString()}</span>
+          <a href="${s.url}" target="_blank" rel="noopener">Open site →</a>
+        </div>`;
+      }).join('')
+    : '<em style="font-size:12px;color:var(--muted);">No sites with a sharp drop 🎉</em>';
+}
+
 function renderStats() {
   const counts = { ok: 0, error: 0, empty: 0, discovered: 0 };
   sites.forEach(s => {
@@ -199,6 +231,7 @@ function renderStats() {
     <div class="stat discovered" data-k="discovered"><div class="n">${counts.discovered}</div><div class="l">Discovered (search)</div></div>
   `;
   statsRow.querySelectorAll('.stat').forEach(el => el.onclick = () => toggleSiteList(el.dataset.k));
+  renderDrops();
 }
 
 function toggleSiteList(kind) {
