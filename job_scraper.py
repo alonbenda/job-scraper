@@ -28,6 +28,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, parse_qsl, urlencode
 
+from api_fetchers import fetch_via_api
 from job_store import get_store
 
 # ---------------------------------------------------------------------------
@@ -683,6 +684,15 @@ def scrape_site(url_entry: dict, config: dict) -> list[dict]:
         jobs = scrape_google_jobs(url, site_name, headless, timeout)
         logger.info(f"  [{site_name}] Found {len(jobs)} raw job entries")
         return jobs
+
+    # Strategy 0: the site's ATS API, if we know it (fast, structured). An empty
+    # answer is not trusted (the API may be filtered or stale) — fall through
+    # to scraping just like on a failure.
+    api_jobs = fetch_via_api(url, site_name, url_entry.get("api"))
+    if api_jobs:
+        return api_jobs
+    if api_jobs is not None:
+        logger.info(f"  [{site_name}] API returned 0 jobs, falling back to scraping")
 
     # Strategy 1: Try static fetch first (much faster)
     html = try_static_fetch(url)

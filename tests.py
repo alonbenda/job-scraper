@@ -698,3 +698,104 @@ def test_company_short_names_dont_false_match():
 
 def test_company_already_covered_empty_known_set():
     assert _company_already_covered("Radware", set()) is False
+
+
+# ===========================================================================
+# API fetchers
+# ===========================================================================
+
+def test_api_handler_dispatch():
+    from api_fetchers import _handler_for
+    assert _handler_for("https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers").__name__ == "_fetch_workday"
+    assert _handler_for("https://job-boards.greenhouse.io/fireblocks").__name__ == "_fetch_greenhouse"
+    assert _handler_for("https://www.comeet.com/jobs/claroty/F2.004").__name__ == "_fetch_comeet"
+    assert _handler_for("https://www.linkedin.com/jobs/search/?keywords=x").__name__ == "_fetch_linkedin"
+    assert _handler_for("https://www.cyberark.com/careers/all-job-openings/") is None
+
+
+def test_fetch_via_api_unsupported_returns_none():
+    from api_fetchers import fetch_via_api
+    assert fetch_via_api("https://example.com/careers", "Example") is None
+
+
+def test_fetch_via_api_failure_returns_none(monkeypatch):
+    import api_fetchers
+    def boom(*a, **k):
+        raise RuntimeError("network down")
+    monkeypatch.setattr(api_fetchers, "_request", boom)
+    assert api_fetchers.fetch_via_api("https://x.wd1.myworkdayjobs.com/Ext", "X") is None
+
+
+def test_fetch_greenhouse_parses_jobs(monkeypatch):
+    import api_fetchers
+
+    class Resp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"jobs": [{"title": "Intern", "absolute_url": "https://x/1",
+                              "location": {"name": "Tel Aviv"}, "updated_at": "2026-01-02T03:04:05Z"}]}
+
+    monkeypatch.setattr(api_fetchers, "_request", lambda *a, **k: Resp())
+    jobs = api_fetchers.fetch_via_api("https://job-boards.greenhouse.io/acme", "Acme")
+    assert jobs == [{"title": "Intern", "link": "https://x/1", "site": "Acme",
+                     "location": "Tel Aviv", "posted_date": "2026-01-02"}]
+
+
+def test_dig_dotted_paths():
+    from api_fetchers import _dig
+    assert _dig({"a": {"b": [{"c": 5}]}}, "a.b.0.c") == 5
+    assert _dig({"a": None}, "a.b") is None
+    assert _dig([1, 2], "") == [1, 2]
+
+
+def test_fetch_json_spec_parses_and_formats_link(monkeypatch):
+    import api_fetchers
+
+    class Resp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"data": [{"id": 7, "title": "R&amp;D Intern", "loc": {"city": "Haifa"}}]}
+
+    monkeypatch.setattr(api_fetchers, "_request", lambda *a, **k: Resp())
+    spec = {"type": "json", "url": "https://x/api", "list": "data", "title": "title",
+            "link_template": "https://x/job/{id}", "location": ["loc.city"]}
+    jobs = api_fetchers.fetch_via_api("", "Acme", spec)
+    assert jobs == [{"title": "R&D Intern", "link": "https://x/job/7", "site": "Acme",
+                     "location": "Haifa", "posted_date": ""}]
+
+
+def test_fetch_taleo_parses_columns(monkeypatch):
+    import api_fetchers
+
+    class Resp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"requisitionList": [{"contestNo": "26A", "column": ["QA Intern", '["IL-Haifa"]', "Nov 1, 2026"]}],
+                    "pagingData": {"pageSize": 25, "totalCount": 1}}
+
+    monkeypatch.setattr(api_fetchers, "_request", lambda *a, **k: Resp())
+    jobs = api_fetchers.fetch_via_api("", "Acme", {"type": "taleo", "base": "https://a.taleo.net"})
+    assert jobs == [{"title": "QA Intern", "link": "https://a.taleo.net/careersection/ex/jobdetail.ftl?job=26A",
+                     "site": "Acme", "location": "IL-Haifa", "posted_date": "Nov 1, 2026"}]
+
+
+def test_scrape_site_falls_back_to_scraping_on_empty_api(monkeypatch):
+    import job_scraper
+    monkeypatch.setattr(job_scraper, "fetch_via_api", lambda *a, **k: [])
+    monkeypatch.setattr(job_scraper, "try_static_fetch", lambda url: "<html></html>")
+    monkeypatch.setattr(job_scraper, "extract_jobs_from_html",
+                        lambda *a, **k: [{"title": "A"}, {"title": "B"}])
+    jobs = job_scraper.scrape_site({"url": "https://x.example/careers", "name": "X"}, {})
+    assert [j["title"] for j in jobs] == ["A", "B"]
+
+
+def test_scrape_site_uses_api_jobs_when_present(monkeypatch):
+    import job_scraper
+    monkeypatch.setattr(job_scraper, "fetch_via_api", lambda *a, **k: [{"title": "API"}])
+    monkeypatch.setattr(job_scraper, "try_static_fetch",
+                        lambda url: (_ for _ in ()).throw(AssertionError("should not scrape")))
+    jobs = job_scraper.scrape_site({"url": "https://x.example/careers", "name": "X"}, {})
+    assert jobs == [{"title": "API"}]

@@ -1,0 +1,499 @@
+{
+ "365Scores": {
+  "type": "json",
+  "url": "https://www.comeet.co/careers-api/2.0/company/B3.006/positions",
+  "params": {
+   "token": "3B6128EB2219FA019FA19FAB222166B22",
+   "details": "false"
+  },
+  "list": "",
+  "title": "name",
+  "link": "url_active_page",
+  "location": [
+   "location.city",
+   "location.name"
+  ],
+  "date": "time_updated"
+ },
+ "Align Technology": {
+  "type": "json",
+  "url": "https://jobs.aligntech.com/he/postings.json",
+  "params": {
+   "location_id[]": "40503"
+  },
+  "list": "data",
+  "title": "title",
+  "link": "url",
+  "location": [
+   "location.city",
+   "location.name"
+  ]
+ },
+ "Cornerstone": {
+  "type": "csod",
+  "base": "https://cornerstone.csod.com",
+  "corp": "cornerstone"
+ },
+ "Taboola": {
+  "type": "json",
+  "url": "https://www.taboola.com/wp-content/uploads/careers/jobs.json",
+  "list": "",
+  "title": "title",
+  "link": "link",
+  "location": "office_textual"
+ },
+ "NSO Group": {
+  "type": "awsm",
+  "url": "https://www.nsogroup.com/jobs/"
+ },
+ "Cato Networks": {
+  "type": "json",
+  "url": "https://boards-api.greenhouse.io/v1/boards/catonetworks/jobs",
+  "list": "jobs",
+  "title": "title",
+  "link": "absolute_url",
+  "location": "location.name",
+  "date": "updated_at"
+ },
+ "Natural Intelligence": {
+  "type": "comeet",
+  "uid": "71.001",
+  "token": "1715C47357355C45C4A17CF9CF9735"
+ },
+ "Rapyd": {
+  "type": "comeet",
+  "uid": "73.00E",
+  "token": "37E11766FC1F6E11761F6E6FC01BF06FC"
+ },
+ "NICE": {
+  "type": "greenhouse",
+  "token": "nice"
+ },
+ "Semperis": {
+  "type": "ashby",
+  "board": "semperis"
+ },
+ "Aqua Security": {
+  "type": "comeet",
+  "uid": "91.001",
+  "token": "191644966966644E194B3191644644"
+ },
+ "Optimove": {
+  "type": "json",
+  "url": "https://boards-api.greenhouse.io/v1/boards/optimove/jobs",
+  "list": "jobs",
+  "title": "title",
+  "link": "absolute_url",
+  "location": "location.name",
+  "date": "updated_at"
+ },
+ "GE Healthcare": {
+  "type": "workday",
+  "url": "https://gehc.wd5.myworkdayjobs.com/GEHC_ExternalSite"
+ },
+ "Remitly": {
+  "type": "workday",
+  "url": "https://remitly.wd5.myworkdayjobs.com/Remitly_Careers"
+ },
+ "Riverside": {
+  "type": "comeet",
+  "uid": "66.009",
+  "token": "66926766692CDF00669CD22CDF133B"
+ },
+ "Radware": {
+  "type": "taleo",
+  "base": "https://radware.taleo.net",
+  "section": "ex"
+ },
+ "Surecomp": {
+  "type": "comeet",
+  "uid": "24.00E",
+  "token": "42E14E610B8259E217021701D420014E6"
+ },
+ "Cyera": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/cyera/17.008"
+ },
+ "IBM": {
+  "type": "json",
+  "method": "POST",
+  "url": "https://www-api.ibm.com/search/api/v2",
+  "body": {
+   "appId": "careers",
+   "scopes": [
+    "careers2"
+   ],
+   "query": {
+    "bool": {
+     "must": [
+      {
+       "term": {
+        "field_keyword_05": "Israel"
+       }
+      }
+     ]
+    }
+   },
+   "size": 100,
+   "from": 0,
+   "lang": "zz",
+   "_source": [
+    "title",
+    "url",
+    "field_keyword_19",
+    "field_keyword_05",
+    "dcdate"
+   ]
+  },
+  "list": "hits.hits",
+  "title": "_source.title",
+  "link": "_source.url",
+  "location": [
+   "_source.field_keyword_19",
+   "_source.field_keyword_05"
+  ],
+  "date": "_source.dcdate"
+ },
+ "Philips": {
+  "type": "workday",
+  "url": "https://philips.wd3.myworkdayjobs.com/jobs-and-careers?q=Israel"
+ },
+ "Voyager Labs": {
+  "type": "comeet",
+  "uid": "63.00A",
+  "token": "36A11126D4147C6D46D4DA8147C147C147C"
+ },
+ "Cisco": {
+  "type": "phenom",
+  "url": "https://careers.cisco.com/global/en/search-results"
+ },
+ "AppsFlyer": {
+  "type": "greenhouse",
+  "token": "appsflyer"
+ },
+ "VAST Data": {
+  "type": "json",
+  "url": "https://www.comeet.co/careers-api/2.0/company/43.001/positions",
+  "params": {
+   "token": "34110453411D4968234168209C31D49",
+   "details": "false"
+  },
+  "list": "",
+  "title": "name",
+  "link": "url_active_page",
+  "location": [
+   "location.city",
+   "location.name"
+  ],
+  "date": "time_updated"
+ },
+ "Upwind": {
+  "type": "comeet",
+  "uid": "49.004",
+  "token": "94440DC0944094401BCC12882510"
+ },
+ "WSC Sports": {
+  "type": "comeet",
+  "uid": "93.007",
+  "token": "39711F3AC5AC539701CB81CB8204FE5C"
+ },
+ "Overwolf": {
+  "type": "json",
+  "url": "https://careers.overwolf.com/api/jobs",
+  "list": "",
+  "title": "name",
+  "link": "url_active_page",
+  "location": [
+   "location.city",
+   "location.name"
+  ]
+ },
+ "Playtika": {
+  "type": "json",
+  "url": "https://boards-api.greenhouse.io/v1/boards/playtikaltd/jobs",
+  "list": "jobs",
+  "title": "title",
+  "link": "absolute_url",
+  "location": "location.name",
+  "date": "updated_at"
+ },
+ "SciPlay": {
+  "type": "workday",
+  "url": "https://lnw.wd5.myworkdayjobs.com/SciPlayExternalCareersSite"
+ },
+ "At-Bay": {
+  "type": "json",
+  "url": "https://boards-api.greenhouse.io/v1/boards/atbayjobs/jobs",
+  "list": "jobs",
+  "title": "title",
+  "link": "absolute_url",
+  "location": "location.name",
+  "date": "updated_at"
+ },
+ "Next Insurance": {
+  "type": "json",
+  "url": "https://www.nextinsurance.com/nextjs-api/careers/",
+  "list": "jobs",
+  "title": "title",
+  "link": "absolute_url",
+  "location": "location.name",
+  "date": "updated_at"
+ },
+ "Unit": {
+  "type": "json",
+  "url": "https://api.ashbyhq.com/posting-api/job-board/unit",
+  "list": "jobs",
+  "title": "title",
+  "link": "jobUrl",
+  "location": "location",
+  "date": "publishedAt"
+ },
+ "Navan": {
+  "type": "json",
+  "url": "https://boards-api.greenhouse.io/v1/boards/tripactions/jobs",
+  "list": "jobs",
+  "title": "title",
+  "link": "absolute_url",
+  "location": "location.name",
+  "date": "updated_at"
+ },
+ "Microsoft": {
+  "type": "eightfold",
+  "base": "https://apply.careers.microsoft.com",
+  "domain": "microsoft.com"
+ },
+ "HPE": {
+  "type": "phenom",
+  "url": "https://careers.hpe.com/us/en/search-results"
+ },
+ "synk": {
+  "type": "ashby",
+  "board": "Snyk"
+ },
+ "notraffic": {
+  "type": "comeet",
+  "uid": "1A.00F",
+  "token": "A1F46D91E5D46D9329B287C0287CA1FA1F"
+ },
+ "Elbit Systems": {
+  "type": "json",
+  "url": "https://elbitsystemscareer.com/cron/jobs.json",
+  "list": "",
+  "title": "jobTitle",
+  "link_template": "https://elbitsystemscareer.com/?locale=en_US&jobId={jobId}",
+  "location": "area",
+  "date": "openDate",
+  "site": "employerName"
+ },
+ "Teva": {
+  "type": "json",
+  "url": "https://www.careers.teva/api/apply/v2/jobs",
+  "params": {
+   "domain": "tevapharm.com",
+   "location": "Israel",
+   "num": 100
+  },
+  "list": "positions",
+  "title": "name",
+  "link_template": "https://www.careers.teva/careers/job/{id}",
+  "location": "location",
+  "paginate": {
+   "param": "start",
+   "total": "count"
+  }
+ },
+ "Develeap": {
+  "type": "comeet",
+  "uid": "B8.005",
+  "token": "8B5343E3CF33CF34E5D4E5D4E5D8B522D4343E"
+ },
+ "Snyk": {
+  "type": "ashby",
+  "board": "Snyk"
+ },
+ "Gong": {
+  "type": "json",
+  "url": "https://boards-api.greenhouse.io/v1/boards/gongio/jobs",
+  "list": "jobs",
+  "title": "title",
+  "link": "absolute_url",
+  "location": "location.name",
+  "date": "updated_at"
+ },
+ "Wiliot": {
+  "type": "comeet",
+  "uid": "F6.003",
+  "token": "6F329B2DE6379829B229B2037983E8B3E8B"
+ },
+ "Ceragon Networks": {
+  "type": "comeet",
+  "uid": "D3.003",
+  "token": "3D3131FF4C01AC57A61AC51E98131FF4C"
+ },
+ "dell": {
+  "type": "oracle",
+  "base": "https://enterpriseplatform.dell.com",
+  "site": "CX_1001",
+  "keyword": "Israel"
+ },
+ "Quantum Machines": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/quantummachines/D6.000"
+ },
+ "44ventures": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/44ventures/18.001"
+ },
+ "April": {
+  "type": "ashby",
+  "board": "april"
+ },
+ "GK8": {
+  "type": "greenhouse",
+  "token": "galaxydigitalservices"
+ },
+ "Astera Labs": {
+  "type": "greenhouse",
+  "token": "asteralabs"
+ },
+ "Marvell": {
+  "type": "workday",
+  "url": "https://marvell.wd1.myworkdayjobs.com/en-US/MarvellCareers"
+ },
+ "Forcepoint": {
+  "type": "workday",
+  "url": "https://forcepoint.wd1.myworkdayjobs.com/en-US/external-careers"
+ },
+ "Arpeely": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/arpeely/57.001"
+ },
+ "TailorMed": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/tailormed/E5.009"
+ },
+ "Insightec": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/insightec/4A.004"
+ },
+ "Paragon": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/paragon/76.006"
+ },
+ "Genpact": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/genpact/B9.008?coref=1.3.rED_A1D&t=1785309312954"
+ },
+ "Cadence": {
+  "type": "workday",
+  "url": "https://cadence.wd1.myworkdayjobs.com/en-US/External_Careers"
+ },
+ "Autodesk": {
+  "type": "workday",
+  "url": "https://autodesk.wd1.myworkdayjobs.com/Ext?locationCountry=084562884af243748dad7c84c304d89a"
+ },
+ "ChargeAfter": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/chargeafter/C5.004"
+ },
+ "Adtran": {
+  "type": "workday",
+  "url": "https://adtran.wd3.myworkdayjobs.com/ADTRAN?locations=636f8af17f10016a4a9842850f014c80"
+ },
+ "Oracle Cloud (fa-epcb)": {
+  "type": "oracle_page",
+  "url": "https://fa-epcb-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX/jobs?location=Israel&locationId=300000000392747&locationLevel=country&mode=location"
+ },
+ "Oracle Cloud (fa-extu)": {
+  "type": "oracle_page",
+  "url": "https://fa-extu-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/jobs?lastSelectedFacet=LOCATIONS&selectedLocationsFacet=300000000469279"
+ },
+ "CrowdStrike": {
+  "type": "workday",
+  "url": "https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers"
+ },
+ "Papaya Gaming": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/papayagaming/46.00B"
+ },
+ "Fireblocks": {
+  "type": "greenhouse_page",
+  "url": "https://job-boards.greenhouse.io/fireblocks?offices%5B%5D=4004060006"
+ },
+ "Red Hat": {
+  "type": "workday",
+  "url": "https://redhat.wd5.myworkdayjobs.com/en-US/jobs"
+ },
+ "HPE (Workday)": {
+  "type": "workday",
+  "url": "https://hpe.wd5.myworkdayjobs.com/en-US/Jobsathpe"
+ },
+ "LinkedIn (Company)": {
+  "type": "linkedin",
+  "url": "https://www.linkedin.com/jobs/search/?currentJobId=4344757008&f_C=11701565&geoId=92000000&origin=COMPANY_PAGE_JOBS_CLUSTER_EXPANSION"
+ },
+ "Amdocs": {
+  "type": "eightfold_page",
+  "url": "https://jobs.amdocs.com/careers?domain=amdocs.com&triggerGoButton=false&triggerGoButton=true&start=0&pid=563431012057392&sort_by=hot"
+ },
+ "Samsung Israel": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/samsung/D4.005"
+ },
+ "Aristocrat": {
+  "type": "workday",
+  "url": "https://aristocrat.wd3.myworkdayjobs.com/AristocratExternalCareersSite/"
+ },
+ "vega": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/vega/C9.009?location=Israel"
+ },
+ "earnix": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/earnix/93.00B?utm_source=secrethunter.io&utm_medium=website&utm_campaign=job-updates&location=Ramat%20Gan,%20Israel"
+ },
+ "Parallel Wireless": {
+  "type": "lever",
+  "url": "https://jobs.lever.co/parallelwireless?location=Kfar%20Saba"
+ },
+ "Applied Materials": {
+  "type": "eightfold_page",
+  "url": "https://careers.appliedmaterials.com/careers?domain=appliedmaterials.com&hl=&start=0&pid=790312945109&sort_by=hot"
+ },
+ "Intel": {
+  "type": "workday",
+  "url": "https://intel.wd1.myworkdayjobs.com/en-US/External"
+ },
+ "PayPal": {
+  "type": "eightfold_page",
+  "url": "https://paypal.eightfold.ai/careers?domain=paypal.com&Codes=W-LINKEDIN&start=0&pid=274917281865&sort_by=timestamp"
+ },
+ "Digital Turbine": {
+  "type": "workday",
+  "url": "https://digitalturbine.wd501.myworkdayjobs.com/Digital_Turbine_External_Careers"
+ },
+ "LinkedIn": {
+  "type": "linkedin",
+  "url": "https://www.linkedin.com/jobs/search/?currentJobId=4341191468&geoId=101620260&keywords=student%20software%20developer&origin=JOB_SEARCH_PAGE_KEYWORD_AUTOCOMPLETE&refresh=true"
+ },
+ "Amazon": {
+  "type": "amazon",
+  "url": "https://www.amazon.jobs/content/en/locations/israel/tel-aviv?region%5B%5D=TA&employment-type%5B%5D=Part+time"
+ },
+ "Claroty": {
+  "type": "comeet_page",
+  "url": "https://www.comeet.com/jobs/Claroty/F2.004"
+ },
+ "Qualcomm": {
+  "type": "eightfold_page",
+  "url": "https://careers.qualcomm.com/careers?location=Hod%20Hasharon%2C%20Haifa%20District%2C%20Israel&pid=446715633102&domain=qualcomm.com&sort_by=relevance"
+ },
+ "Oracle Cloud (edbz)": {
+  "type": "oracle_page",
+  "url": "https://edbz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX/jobs?keyword=student&location=Israel&locationId=300000000361478&locationLevel=country&mode=location"
+ },
+ "Oracle Cloud (hdjq)": {
+  "type": "oracle_page",
+  "url": "https://hdjq.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/jobs?location=Israel&locationId=300000000228780&locationLevel=country&mode=location"
+ }
+}
