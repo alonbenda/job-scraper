@@ -18,6 +18,9 @@ from job_scraper import (
     matches_field,
     matches_exclude,
     matches_job,
+    matches_candidate,
+    classify_by_description,
+    _categorize_job,
     matches_location,
     job_id,
     canonical_link,
@@ -447,6 +450,10 @@ class _FakeResponse:
         self.status_code = status_code
         self.text = ""
 
+    @property
+    def ok(self):
+        return self.status_code < 400
+
     def json(self):
         return self._json_data
 
@@ -502,6 +509,121 @@ def test_get_all_sites_defaults_missing_source_to_manual(monkeypatch):
     monkeypatch.setattr(db.requests, "get", lambda *a, **k: _FakeResponse(rows))
     result = db.get_all_sites()
     assert result[0]["discovered"] is False
+
+
+# ===========================================================================
+# Description-based junior detection (ordered rules)
+# ===========================================================================
+
+def test_candidate_needs_field_but_no_role_and_no_exclude():
+    roles, fields, excl = ["junior", "intern"], ["software", "engineer"], ["senior", "lead"]
+    assert matches_candidate("Software Engineer", roles, fields, excl) == ["software", "engineer"]
+    assert matches_candidate("Junior Software Engineer", roles, fields, excl) == []  # matches_job handles it
+    assert matches_candidate("Senior Software Engineer", roles, fields, excl) == []
+    assert matches_candidate("Account Manager", roles, fields, excl) == []
+
+def test_classify_rejects_three_plus_years():
+    assert classify_by_description("Requires 5+ years of experience in backend") == "reject"
+    assert classify_by_description("3-5 years experience with Python") == "reject"
+
+def test_classify_junior_by_years():
+    assert classify_by_description("0-2 years of experience") == "junior"
+    assert classify_by_description("1+ years of relevant experience") == "junior"
+
+def test_classify_junior_by_phrase():
+    assert classify_by_description("Great for a recent graduate. Entry level role.") == "junior"
+    assert classify_by_description("חיפשנו בוגר/ת תואר ראשון") == "junior"
+    assert classify_by_description("ללא ניסיון קודם") == "junior"
+
+def test_classify_reject_beats_junior():
+    # Rules are ordered: a 5+ years requirement wins over a stray "graduate" phrase
+    assert classify_by_description("New grads welcome. 5+ years of experience required.") == "reject"
+
+def test_classify_senior_word_in_description_is_not_a_reject():
+    text = "Join our team and learn from our senior engineers. Entry level."
+    assert classify_by_description(text) == "junior"
+
+def test_classify_reject_on_lead_roles():
+    assert classify_by_description("You will act as the team lead for 4 developers") == "reject"
+    assert classify_by_description("Software Engineer III responsibilities") == "reject"
+
+def test_classify_maybe_when_nothing_decides():
+    assert classify_by_description("We build great products. Python, SQL.") == "maybe"
+    assert classify_by_description("") == "maybe"
+
+def test_classify_ignores_years_not_about_experience():
+    assert classify_by_description("Founded 20 years ago, we build products.") == "maybe"
+
+def test_classify_engineer_i_is_case_sensitive():
+    assert classify_by_description("Software Engineer I") == "junior"
+    assert classify_by_description("the engineer i spoke with") == "maybe"
+
+def test_categorize_job_maybe():
+    assert _categorize_job({"category": "maybe", "matched_roles": []}) == "maybe"
+    assert _categorize_job({"category": "junior", "matched_roles": []}) == "junior"
+    assert _categorize_job({"matched_roles": ["intern"]}) == "student"
+
+
+def test_dismiss_job_patches_dismissed_flag(monkeypatch):
+    captured = {}
+    def _fake_patch(url, headers=None, params=None, json=None, **k):
+        captured.update(url=url, params=params, json=json)
+        return _FakeResponse({}, status_code=204)
+    monkeypatch.setattr(db.requests, "patch", _fake_patch)
+    assert db.dismiss_job("abc123") is True
+    assert captured["params"] == {"id": "eq.abc123"}
+    assert captured["json"] == {"dismissed": True}
+
+def test_dismiss_job_returns_false_on_error(monkeypatch):
+    def _raise(*a, **k):
+        raise ConnectionError("boom")
+    monkeypatch.setattr(db.requests, "patch", _raise)
+    assert db.dismiss_job("abc123") is False
+
+def test_get_jobs_falls_back_when_dismissed_column_missing(monkeypatch):
+    calls = []
+    def _fake_get(url, headers=None, params=None, **k):
+        calls.append(params)
+        if "or" in params:
+            return _FakeResponse([], status_code=400)
+        return _FakeResponse([{"id": "1"}])
+    monkeypatch.setattr(db.requests, "get", _fake_get)
+    assert db.get_jobs() == [{"id": "1"}]
+    assert "or" in calls[0] and "or" not in calls[1]
+
+def test_save_new_jobs_includes_category_only_when_set(monkeypatch):
+    sent = []
+    monkeypatch.setattr(db.requests, "post",
+                        lambda url, headers=None, json=None, **k: (sent.append(json), _FakeResponse({}, 201))[1])
+    db.save_new_jobs([
+        {"id": "a", "title": "t", "site": "s", "category": "maybe"},
+        {"id": "b", "title": "t", "site": "s"},
+    ])
+    rows = {r["id"]: r for r in sent[0]}
+    assert rows["a"]["category"] == "maybe"
+    assert "category" not in rows["b"]
+
+def test_save_new_jobs_rejected_rows_are_hidden(monkeypatch):
+    sent = []
+    monkeypatch.setattr(db.requests, "post",
+                        lambda url, headers=None, json=None, **k: (sent.append(json), _FakeResponse({}, 201))[1])
+    db.save_new_jobs([{"id": "r", "title": "t", "site": "s", "category": "rejected"}])
+    assert sent[0][0]["category"] == "rejected"
+    assert sent[0][0]["dismissed"] is True
+
+def test_save_new_jobs_drops_rejected_rows_when_columns_missing(monkeypatch):
+    sent = []
+    def _fake_post(url, headers=None, json=None, **k):
+        sent.append(json)
+        return _FakeResponse({}, 400 if any("category" in r for r in json) else 201)
+    monkeypatch.setattr(db.requests, "post", _fake_post)
+    db.save_new_jobs([
+        {"id": "r", "title": "t", "site": "s", "category": "rejected"},
+        {"id": "m", "title": "t", "site": "s", "category": "maybe"},
+    ])
+    retry = sent[1]
+    assert [r["id"] for r in retry] == ["m"]  # rejected row must not be saved visible
+    assert all("category" not in r and "dismissed" not in r for r in retry)
 
 
 # ===========================================================================

@@ -211,7 +211,7 @@ def save_new_jobs(jobs: list[dict]):
     try:
         rows = []
         for job in jobs:
-            rows.append({
+            row = {
                 "id": job["id"],
                 "title": job.get("title", ""),
                 "company": job.get("site", ""),
@@ -227,7 +227,14 @@ def save_new_jobs(jobs: list[dict]):
                 "notified": True,
                 "first_seen": datetime.now(timezone.utc).isoformat(),
                 "last_seen": datetime.now(timezone.utc).isoformat(),
-            })
+            }
+            # Only description-classified jobs carry a category ('junior'/'maybe');
+            # leaving it out for the rest keeps older schemas working.
+            if job.get("category"):
+                row["category"] = job["category"]
+            if job.get("category") == "rejected":
+                row["dismissed"] = True  # hidden from the dashboard; kept only so it isn't re-fetched
+            rows.append(row)
 
         # Batch insert
         batch_size = 500
@@ -238,6 +245,19 @@ def save_new_jobs(jobs: list[dict]):
                 headers=_headers(prefer="resolution=merge-duplicates"),
                 json=batch,
             )
+            if resp.status_code not in (200, 201) and any("category" in r for r in batch):
+                # The 'category'/'dismissed' columns may not exist yet — retry without them.
+                # Rejected rows are dropped on the retry: without 'dismissed' they would show up.
+                logger.warning("DB: save with 'category' failed (run the jobs.category/dismissed migration?) — retrying without it")
+                stripped = [{k: v for k, v in r.items() if k not in ("category", "dismissed")}
+                            for r in batch if r.get("category") != "rejected"]
+                if not stripped:
+                    continue
+                resp = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/jobs",
+                    headers=_headers(prefer="resolution=merge-duplicates"),
+                    json=stripped,
+                )
             if resp.status_code not in (200, 201):
                 logger.error(f"DB: Failed to save jobs: {resp.status_code} {resp.text}")
     except Exception as e:
@@ -330,13 +350,17 @@ def delete_stale_jobs(keep_ids: set, max_age_days: int = 30):
 # ---------------------------------------------------------------------------
 
 def get_jobs(limit: int = 300) -> list[dict]:
-    """Fetch jobs for the dashboard, newest first."""
+    """Fetch jobs for the dashboard, newest first (dismissed ones excluded)."""
     try:
+        params = {"select": "*", "order": "first_seen.desc", "limit": limit}
         resp = requests.get(
             f"{SUPABASE_URL}/rest/v1/jobs",
             headers=_headers(),
-            params={"select": "*", "order": "first_seen.desc", "limit": limit},
+            params={**params, "or": "(dismissed.is.null,dismissed.eq.false)"},
         )
+        if not resp.ok:
+            # 'dismissed' column not migrated yet — show everything
+            resp = requests.get(f"{SUPABASE_URL}/rest/v1/jobs", headers=_headers(), params=params)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -397,6 +421,25 @@ def set_last_viewed():
         )
     except Exception:
         pass  # Non-critical, don't crash the dashboard
+
+
+def dismiss_job(job_id: str) -> bool:
+    """
+    Hide a job from the dashboard. A soft delete on purpose: removing the row
+    would drop its ID from the seen set and the scraper would re-add the job
+    as new on the next run.
+    """
+    try:
+        resp = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/jobs",
+            headers=_headers(),
+            params={"id": f"eq.{job_id}"},
+            json={"dismissed": True},
+        )
+        return resp.ok
+    except Exception as e:
+        logger.error(f"DB: Failed to dismiss job {job_id}: {e}")
+        return False
 
 
 def mark_job_clicked(job_id: str):

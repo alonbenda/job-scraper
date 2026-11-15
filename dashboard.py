@@ -52,6 +52,15 @@ def api_mark_clicked():
     return jsonify({"ok": True})
 
 
+@app.route("/api/dismiss", methods=["POST"])
+def api_dismiss():
+    job_id = (request.get_json(silent=True) or {}).get("id", "")
+    if not job_id:
+        return jsonify({"ok": False}), 400
+    ok = db.dismiss_job(job_id)
+    return jsonify({"ok": ok}), (200 if ok else 500)
+
+
 if __name__ == "__main__":
     if not db.is_configured():
         print("WARNING: SUPABASE_URL / SUPABASE_KEY not set - the dashboard needs Supabase to show data.")

@@ -80,6 +80,9 @@
   .cat-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-right: 6px; }
   .cat-badge.student { background: #dcfce7; color: #166534; }
   .cat-badge.junior { background: #eff6ff; color: #1e40af; }
+  .cat-badge.maybe { background: #fef3c7; color: #92400e; }
+  button.dismiss { background: none; border: none; color: #9ca3af; cursor: pointer; font-size: 14px; margin-left: 8px; padding: 0 4px; }
+  button.dismiss:hover { color: #dc2626; }
   a.apply { color: #2563eb; text-decoration: none; font-size: 13px; }
   a.apply.visited { color: #16a34a; font-weight: 600; }
   .empty-msg { text-align: center; color: var(--muted); padding: 30px; }
@@ -137,6 +140,7 @@
         <option value="all">All categories</option>
         <option value="student">🎓 Student / Intern</option>
         <option value="junior">🚀 Junior / Entry-level</option>
+        <option value="maybe">❓ Not sure</option>
       </select>
       <select id="timeFilter">
         <option value="all">Any time</option>
@@ -188,6 +192,7 @@ function scoreBadge(score) {
 }
 
 function categorize(job) {
+  if (job.category === 'maybe') return 'maybe';
   const roles = job.matched_roles || [];
   return roles.some(r => ['student', 'intern', 'internship'].includes(r)) ? 'student' : 'junior';
 }
@@ -274,7 +279,7 @@ function renderJobs() {
   document.getElementById('emptyMsg').style.display = jobs.length ? 'none' : 'block';
   body.innerHTML = jobs.map(j => {
     const cat = categorize(j);
-    const catLabel = cat === 'student' ? '🎓 Student' : '🚀 Junior';
+    const catLabel = { student: '🎓 Student', maybe: '❓ Not sure' }[cat] || '🚀 Junior';
     const roles = (j.matched_roles || []).map(k => `<span class="kw">${k}</span>`).join('');
     const fields = (j.matched_fields || []).map(k => `<span class="kw field">${k}</span>`).join('');
     const visited = !!j.clicked_at;
@@ -290,12 +295,30 @@ function renderJobs() {
         <td data-label="CV Fit">${scoreBadge(j.fit_score)}</td>
         <td data-label="Posted">${j.posted_date || '—'}</td>
         <td data-label="Keywords">${roles}${fields}</td>
-        <td data-label="Link">${link}</td>
+        <td data-label="Link">${link}<button class="dismiss" data-job-id="${j.id}" title="Remove this job from the dashboard">✕</button></td>
       </tr>`;
   }).join('');
   body.querySelectorAll('a.apply[data-job-id]').forEach(el => {
     el.onclick = () => markClicked(el.dataset.jobId);
   });
+  body.querySelectorAll('button.dismiss').forEach(el => {
+    el.onclick = () => dismissJob(el.dataset.jobId);
+  });
+}
+
+async function dismissJob(jobId) {
+  try {
+    const resp = await fetch('/api/dismiss', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: jobId }),
+    });
+    if (!resp.ok) throw new Error('dismiss failed');
+    allJobs = allJobs.filter(j => j.id !== jobId);
+    renderJobs();
+  } catch {
+    alert('Could not remove the job — is the "dismissed" column added in Supabase?');
+  }
 }
 
 async function markClicked(jobId) {

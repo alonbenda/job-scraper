@@ -39,6 +39,7 @@ SCRIPT_DIR = Path(__file__).parent
 CONFIG_FILE = SCRIPT_DIR / "config.json"
 SEEN_JOBS_FILE = SCRIPT_DIR / "seen_jobs.json"
 CV_FILE = SCRIPT_DIR / "cv_skills.json"  # Cached parsed CV skills
+MAX_DESC_FETCHES_PER_RUN = 100  # Cap on description fetches for jobs without a role keyword in the title
 LOG_FILE = SCRIPT_DIR / "scraper.log"
 
 # ---------------------------------------------------------------------------
@@ -774,6 +775,70 @@ def matches_job(title: str, role_keywords: list[str], field_keywords: list[str],
     return None
 
 
+def matches_candidate(title: str, role_keywords: list[str], field_keywords: list[str],
+                      exclude_keywords: list[str] = None) -> list[str]:
+    """
+    A job with NO role keyword in its title (so matches_job rejects it) that is
+    still worth checking against its description: it has a field keyword and no
+    exclude keyword. Returns the matched field keywords ([] if not a candidate).
+    """
+    if exclude_keywords and matches_exclude(title, exclude_keywords):
+        return []
+    if matches_role(title, role_keywords):
+        return []  # handled by matches_job
+    return matches_field(title, field_keywords)
+
+
+# --- Description-based seniority classification (ordered rules) -------------
+
+# "3+ years", "0-2 years", "1 to 3 yrs" ...
+_YEARS_EN_RE = re.compile(
+    r'(\d{1,2})\s*(?:\+|plus)?\s*(?:(?:-|–|to)\s*(\d{1,2})\s*\+?\s*)?(?:years?|yrs?)\b', re.I)
+# "5 שנות ניסיון", "3-5 שנים"
+_YEARS_HE_RE = re.compile(
+    r'(\d{1,2})\s*\+?\s*(?:(?:-|–)\s*(\d{1,2})\s*)?(?:שנות|שנים|שנה)')
+_SENIOR_RE = re.compile(
+    r'\b(?:team\s+lead|tech(?:nical)?\s+lead|principal\s+(?:software\s+)?(?:engineer|developer)|'
+    r'staff\s+(?:software\s+)?(?:engineer|developer)|(?:engineer|developer)\s+(?:iii|iv))\b', re.I)
+_JUNIOR_RE = re.compile(
+    r'\b(?:entry[- ]level|new\s+grads?|recent\s+graduates?|fresh\s+graduates?|'
+    r'graduate\s+(?:program|role|position|engineer|developer)|early[- ]career|trainee|'
+    r'no\s+(?:prior\s+|previous\s+)?experience\s+(?:is\s+)?(?:required|needed|necessary))\b'
+    r'|ללא\s+ניסיון|ללא\s+צורך\s+בניסיון|בוגר(?:ת|י|ות)?\b|שנתיים\s+ניסיון|ניסיון\s+של\s+שנתיים'
+    r'|\b(?-i:(?:Engineer|Developer)\s+I(?![A-Za-z]))',  # case-sensitive on purpose: "Engineer I", not "engineer i will"
+    re.I)
+
+
+def _extract_experience_years(text: str) -> list[int]:
+    """Lowest bound of every 'N years' mention that is about experience."""
+    found = []
+    for rx in (_YEARS_EN_RE, _YEARS_HE_RE):
+        for m in rx.finditer(text):
+            window = text[max(0, m.start() - 60): m.end() + 60].lower()
+            if "experience" in window or "ניסיון" in window:
+                found.append(int(m.group(1)))
+    if re.search(r'שנתיים', text) and "ניסיון" in text:
+        found.append(2)
+    return found
+
+
+def classify_by_description(text: str, title: str = "") -> str:
+    """
+    Ordered rules for a job whose title has no role keyword:
+      1. 'reject' — requires 3+ years, or lead/principal/staff/Engineer III+
+      2. 'junior' — 0-2 years, entry level, graduate, new grad, ...
+      3. 'maybe'  — can't tell (shown separately in the dashboard)
+    """
+    full = f"{title}\n{text or ''}"
+    years = _extract_experience_years(full)
+    if any(y >= 3 for y in years) or _SENIOR_RE.search(full):
+        return "reject"
+    if (years and min(years) <= 2) or _JUNIOR_RE.search(full):
+        return "junior"
+    return "maybe"
+
+
+
 def matches_location(job: dict, location_filters: list[str]) -> bool:
     """
     Check if a job is in Israel.
@@ -1339,7 +1404,9 @@ def score_jobs(jobs: list[dict], cv_data: dict, config: dict) -> list[dict]:
     return jobs
 
 def _categorize_job(job: dict) -> str:
-    """Categorize a job as 'student' or 'junior' based on matched role keywords."""
+    """Categorize a job as 'student', 'junior' or 'maybe' (description was inconclusive)."""
+    if job.get("category") == "maybe":
+        return "maybe"
     roles = job.get("matched_roles", [])
     for r in roles:
         if r in ("student", "intern", "internship"):
@@ -1446,6 +1513,7 @@ def build_email_html(new_jobs: list[dict], config: dict,
     # Split jobs into categories
     student_jobs = [j for j in new_jobs if _categorize_job(j) == "student"]
     junior_jobs = [j for j in new_jobs if _categorize_job(j) == "junior"]
+    maybe_jobs = [j for j in new_jobs if _categorize_job(j) == "maybe"]
 
     # Build sections
     jobs_section = ""
@@ -1464,6 +1532,14 @@ def build_email_html(new_jobs: list[dict], config: dict,
             {_build_jobs_table(junior_jobs, has_cv)}
         </div>"""
 
+    if maybe_jobs:
+        jobs_section += f"""
+        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:16px;margin-bottom:20px;">
+            <h2 style="margin:0 0 12px;font-size:18px;color:#92400e;">❓ Not Sure — Check Manually ({len(maybe_jobs)})</h2>
+            <p style="margin:0 0 12px;font-size:12px;color:#78350f;">No "junior" in the title and the description didn't settle it. You can remove irrelevant ones from the dashboard.</p>
+            {_build_jobs_table(maybe_jobs, has_cv)}
+        </div>"""
+
     # Skills breakdown for all jobs with CV
     skills_detail = ""
     if has_cv and new_jobs:
@@ -1479,7 +1555,7 @@ def build_email_html(new_jobs: list[dict], config: dict,
             missing_html = ", ".join(f'<span style="background:#fee2e2;padding:1px 4px;border-radius:3px;font-size:10px;color:#991b1b;">{s}</span>' for s in missing_s[:8])
             if not matched_html and not missing_html:
                 continue
-            category_icon = "🎓" if _categorize_job(job) == "student" else "🚀"
+            category_icon = {"student": "🎓", "maybe": "❓"}.get(_categorize_job(job), "🚀")
             detail_rows += f"""
             <tr>
                 <td style="padding:4px 8px;border-bottom:1px solid #f3f4f6;font-size:12px;">{category_icon} {job['title'][:40]}</td>
@@ -1583,6 +1659,8 @@ def build_email_html(new_jobs: list[dict], config: dict,
         category_summary.append(f"🎓 {student_count} Student/Intern")
     if junior_count:
         category_summary.append(f"🚀 {junior_count} Junior/Entry-Level")
+    if len(maybe_jobs):
+        category_summary.append(f"❓ {len(maybe_jobs)} Not Sure")
     category_text = " | ".join(category_summary) if category_summary else ""
 
     return f"""
@@ -1674,6 +1752,8 @@ def run_scraper():
     currently_live_ids = set()  # Track job IDs found in this scan
     existing_seen_ids = []  # Track IDs of jobs we've already seen
     id_migrations = {}      # old link-based job ID -> external-ID-based one
+    rejected_jobs = []      # Jobs rejected by description — stored hidden so they aren't re-fetched
+    desc_fetches = 0       # Description fetches used so far this run
 
     # --- Parallel scraping with ThreadPoolExecutor ---
     max_workers = config.get("max_workers", 5)
@@ -1738,6 +1818,7 @@ def run_scraper():
         # Filter: must match ROLE + FIELD + LOCATION
         is_aggregator = url_entry.get("name") in _AGGREGATOR_SITE_NAMES
         matching = []
+        candidates = []
         for job in jobs:
             if is_aggregator and _company_already_covered(job["site"], known_company_names):
                 # We already scrape this company's own page directly — the
@@ -1757,6 +1838,36 @@ def run_scraper():
                 job["matched_fields"] = match["fields"]
                 if matches_location(job, location_filters):
                     matching.append(job)
+            elif matches_candidate(job["title"], role_keywords, field_keywords, exclude_keywords):
+                if matches_location(job, location_filters):
+                    candidates.append(job)
+
+        # Jobs with no role keyword in the title: decide by description (ordered rules)
+        if candidates:
+            assign_job_ids(candidates, context_jobs=jobs)
+            for job in candidates:
+                jid, legacy = job["id"], job.get("legacy_id")
+                if jid in seen_job_ids or legacy in seen_job_ids:
+                    # Already stored earlier (kept, "maybe", or rejected-by-description):
+                    # keep it live so last_seen is bumped, and don't re-fetch.
+                    matching.append(job)
+                    continue
+                if desc_fetches >= MAX_DESC_FETCHES_PER_RUN:
+                    continue  # budget spent — picked up on a later run
+                desc_fetches += 1
+                verdict = classify_by_description(fetch_job_description(job, config), job["title"])
+                time.sleep(0.3)
+                if verdict == "reject":
+                    # Remembered as a hidden row so the next run doesn't fetch it again
+                    job["category"] = "rejected"
+                    rejected_jobs.append(job)
+                    seen_job_ids.add(jid)
+                    continue
+                job["category"] = verdict  # 'junior' or 'maybe'
+                job["matched_fields"] = matches_field(job["title"], field_keywords)
+                job["matched_roles"] = []
+                job["matched_keywords"] = job["matched_fields"]
+                matching.append(job)
 
         total_matching += len(matching)
 
@@ -1789,7 +1900,7 @@ def run_scraper():
             logger.info(f"  [{url_entry.get('name')}] {len(matching)} matching, 0 new")
 
     # Save data
-    store.save_new_jobs(all_new_jobs)
+    store.save_new_jobs(all_new_jobs + rejected_jobs)
     if id_migrations:
         logger.info(f"🔁 Re-keying {len(id_migrations)} stored job(s) to external IDs")
         store.rename_job_ids(id_migrations)

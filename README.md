@@ -54,6 +54,20 @@ One-time setup:
 3. Paste the anon key (Project Settings → API) into `SUPABASE_ANON_KEY` in `web/index.html`.
 4. Connect this repo to Netlify (`publish = "web"`, already set in `netlify.toml`, no build command) — auto-deploys on every push to `main`.
 
+### Junior detection without "junior" in the title
+
+Jobs with a field keyword but no role keyword in the title get their description fetched and classified by ordered rules (`classify_by_description` in `job_scraper.py`): **reject** (3+ years, lead/principal/staff…) → **junior** (0–2 years, entry level, graduate…) → otherwise **maybe** ("Not sure" in the dashboard and email). Rejected jobs are stored as hidden rows (`category='rejected'`, `dismissed=true`) so they aren't fetched again, and are cleaned up with the other stale jobs; at most `MAX_DESC_FETCHES_PER_RUN` descriptions are fetched per run.
+
+The ✕ button on a dashboard row hides the job (`dismissed = true`, a soft delete so the scraper doesn't re-add it). Run once in the Supabase SQL editor:
+
+```sql
+alter table jobs add column if not exists category text;
+alter table jobs add column if not exists dismissed boolean not null default false;
+-- the Netlify page needs UPDATE on jobs for the logged-in user (it already PATCHes clicked_at)
+```
+
+Until the columns exist, the scraper and dashboards fall back to the old behaviour (no category, no dismissing).
+
 ## Customization
 
 Edit `config.json`:
