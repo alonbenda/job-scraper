@@ -557,8 +557,14 @@ def test_classify_junior_by_years():
 def test_classify_range_must_top_out_at_three_to_be_junior():
     assert classify_by_description("0-3 years of relevant experience") == "junior"
     assert classify_by_description("1-3 years of experience") == "junior"
-    assert classify_by_description("2-4 years of experience in DevOps") == "maybe"
-    assert classify_by_description("2–4 years of experience in DevOps") == "maybe"  # en dash
+    assert classify_by_description("0-5 years of experience") == "maybe"
+
+def test_classify_rejects_two_plus_years():
+    assert classify_by_description("2+ years of experience") == "reject"
+    assert classify_by_description("2 years of relevant experience") == "reject"
+    assert classify_by_description("2-4 years of experience in DevOps") == "reject"
+    assert classify_by_description("2–4 years of experience in DevOps") == "reject"  # en dash
+    assert classify_by_description("שנתיים ניסיון בפיתוח") == "reject"
 
 def test_classify_years_with_experience_far_after_the_number():
     text = "- 3+ years of non-internship professional software development experience - Bachelor's degree"

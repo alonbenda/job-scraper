@@ -843,7 +843,7 @@ _JUNIOR_RE = re.compile(
     r'graduate\s+(?:program|role|position|engineer|developer)|early[- ]career|trainee|'
     r'no\s+(?:prior\s+|previous\s+)?experience\s+(?:is\s+)?(?:required|needed|necessary))\b'
     # NOT a bare "בוגר": "בוגר.ת תואר ראשון" is an ordinary degree requirement, not entry level
-    r'|ללא\s+ניסיון|ללא\s+צורך\s+בניסיון|בוגר(?:ים|ות|י)?[.\s/]*(?:ות\s+)?טרי(?:ים|ות)?|בתחילת\s+דרכ|שנתיים\s+ניסיון|ניסיון\s+של\s+שנתיים'
+    r'|ללא\s+ניסיון|ללא\s+צורך\s+בניסיון|בוגר(?:ים|ות|י)?[.\s/]*(?:ות\s+)?טרי(?:ים|ות)?|בתחילת\s+דרכ'
     r'|\b(?-i:(?:Engineer|Developer)\s+I(?![A-Za-z]))',  # case-sensitive on purpose: "Engineer I", not "engineer i will"
     re.I)
 
@@ -867,17 +867,16 @@ def _extract_experience_years(text: str) -> list[tuple[int, int | None]]:
 def classify_by_description(text: str, title: str = "") -> str:
     """
     Ordered rules for a job whose title has no role keyword:
-      1. 'reject' — requires 3+ years, or lead/principal/staff/Engineer III+
-      2. 'junior' — 0-2 years, entry level, graduate, new grad, ...
+      1. 'reject' — requires 2+ years, or lead/principal/staff/Engineer III+
+      2. 'junior' — up to 1 year minimum, entry level, graduate, new grad, ...
       3. 'maybe'  — can't tell (shown separately in the dashboard)
     """
     full = f"{title}\n{text or ''}"
     years = _extract_experience_years(full)
-    if any(low >= 3 for low, _ in years) or _SENIOR_RE.search(full):
+    if any(low >= 2 for low, _ in years) or _SENIOR_RE.search(full):
         return "reject"
-    # A single number is junior up to 2 years; a range only if it tops out at 3
-    # ("0-2", "1-3" yes — "2-4" is mid-level, left as 'maybe').
-    if any((high <= 3) if high is not None else (low <= 2) for low, high in years) \
+    # Minimum must be at most 1 year ("1+", "0-2", "1-3" yes — "2+", "2-4" are rejected above).
+    if any(low <= 1 and (high is None or high <= 3) for low, high in years) \
             or _JUNIOR_RE.search(full):
         return "junior"
     return "maybe"

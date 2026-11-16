@@ -7,6 +7,7 @@ __pycache__/
 # Runtime-generated local state (only used when Supabase isn't configured)
 scraper.log
 *.log
+*.log.*
 seen_jobs.json
 last_cleanup.json
 cv_skills.json
