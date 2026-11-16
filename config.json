@@ -1,7 +1,7 @@
 {
   "role_keywords": ["student", "intern", "internship", "junior", "entry level", "entry-level", "new grad", "graduate", "סטודנט", "מתמחה", "התמחות", "ג'וניור", "זוטר", "בוגר"],
   "field_keywords": ["software", "engineer", "engineering", "developer", "development", "r&d", "devops", "backend", "frontend", "fullstack", "full-stack", "full stack", "data", "algorithm", "embedded", "firmware", "cloud", "infrastructure", "security", "cyber", "machine learning", "ml", "ai", "qa", "automation", "sre", "platform", "תוכנה", "מפתח", "פיתוח", "מהנדס", "הנדסה", "הנדסת", "אלגוריתם", "דאטה", "נתונים", "ענן", "סייבר", "אבטחה", "אוטומציה", "בדיקות", "אמבדד", "למידת מכונה"],
-  "exclude_keywords": ["senior", "manager", "management", "director", "lead", "principal", "staff", "vp", "head of", "chief", "בכיר", "מנהל", "ניהול", "סמנכ\"ל", "מוביל"],
+  "exclude_keywords": ["senior", "manager", "management", "director", "lead", "leader", "principal", "staff", "vp", "head of", "chief", "technician", "system", "systems", "בכיר", "מנהל", "ניהול", "סמנכ\"ל", "מוביל"],
   "cv_path": "Alon Ben David - CV.pdf",
   "location_filter": ["israel", "tel aviv", "tel-aviv", "herzliya", "haifa", "petach tikva", "petah tikva", "beer sheva", "be'er sheva", "ramat gan", "hod hasharon", "jerusalem", "kfar saba", "kefar sava", "netanya", "rehovot", "yokneam", "caesarea", "ra'anana", "raanana", "modiin", "modi'in"],
   "urls": [
@@ -127,7 +127,6 @@
     {"url": "https://www.comeet.com/jobs/echo/9A.006?location=Tel%20Aviv", "name": "Echo"},
     {"url": "https://careers.netapp.com/search-jobs/Israel?orgIds=27600&alp=294640&alt=2", "name": "NetApp"},
     {"url": "https://www.gotfriends.co.il/jobslobby/?utm_source=google&utm_medium=cpc&utm_campaign=competitor&gad_source=1&gad_campaignid=190034743&gbraid=0AAAAADpX1Vkh4VbyE8_h39zD3RkVJ-vi5&gclid=CjwKCAiAkvDMBhBMEiwAnUA9BRdEIlzT5MJJ6ipRFpP0Yg7INQNpipkvZ6G5e2fEGYvxcNdVq8isnhoCG7wQAvD_BwE", "name": "gotfriend"},
-    {"url": "https://snyk.io/careers/all-jobs/?location=Israel", "name": "synk"},
     {"url": "https://www.armis.com/armis-careers/#discoverjobs", "name": "armis"},
     {"url": "https://www.comeet.com/jobs/vega/C9.009?location=Israel", "name": "vega"},
     {"url": "https://www.notraffic.com/careers/", "name": "notraffic"},

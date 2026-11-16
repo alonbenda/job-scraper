@@ -196,6 +196,30 @@ def test_london_rejected():
     job = {"title": "Software Intern - London", "link": "", "location": "", "site": "Meta", "source_url": ""}
     assert matches_location(job, ["israel", "tel aviv"]) is False
 
+def test_api_job_ignores_israeli_source_url():
+    # The API lists a company's jobs worldwide; "?location=Israel" in the page URL doesn't filter it
+    foreign = {"title": "Design Engineer", "link": "https://x.com/1", "location": "New York, Hybrid",
+               "site": "vega", "source_url": "https://www.comeet.com/jobs/vega/C9.009?location=Israel"}
+    assert matches_location(foreign, ["israel", "tel aviv"]) is True  # scraped HTML: the URL filter applies
+    assert matches_location({**foreign, "via_api": True}, ["israel", "tel aviv"]) is False
+
+def test_api_job_with_israeli_location_still_accepted():
+    job = {"title": "Backend Engineer", "link": "https://x.com/1", "location": "Tel Aviv, Israel", "site": "vega",
+           "source_url": "https://www.comeet.com/jobs/vega/C9.009?location=Israel", "via_api": True}
+    assert matches_location(job, ["israel", "tel aviv"]) is True
+
+def test_spelled_out_us_states_and_region_labels_rejected():
+    for loc in ("Raleigh, RTP, North Carolina", "Waco, Texas (REMOTE)", "Remote (US)", "Kyiv", "APAC",
+                "Reykjavík, Iceland - Reykjavik", "Nordics (Remote)", "IN-IN-Bengaluru", "Florida"):
+        job = {"title": "Software Engineer", "link": "", "location": loc, "site": "X", "source_url": ""}
+        assert matches_location(job, ["israel", "tel aviv"]) is False, loc
+
+def test_israeli_regions_and_cities_not_rejected():
+    for loc in ("North", "Center", "Sharon", "Shfela", "South", "Kiryat Gat,ISR", "Mig Ha'emek,ISR", "Kinneret",
+                "Tel Aviv / London", "Herzliya, Israel"):
+        job = {"title": "Software Engineer", "link": "", "location": loc, "site": "X", "source_url": ""}
+        assert matches_location(job, ["israel", "tel aviv", "herzliya"]) is True, loc
+
 def test_unknown_location_accepted():
     job = {"title": "Software Intern", "link": "", "location": "", "site": "Startup", "source_url": ""}
     assert matches_location(job, ["israel", "tel aviv"]) is True
@@ -530,10 +554,25 @@ def test_classify_junior_by_years():
     assert classify_by_description("0-2 years of experience") == "junior"
     assert classify_by_description("1+ years of relevant experience") == "junior"
 
+def test_classify_range_must_top_out_at_three_to_be_junior():
+    assert classify_by_description("0-3 years of relevant experience") == "junior"
+    assert classify_by_description("1-3 years of experience") == "junior"
+    assert classify_by_description("2-4 years of experience in DevOps") == "maybe"
+    assert classify_by_description("2–4 years of experience in DevOps") == "maybe"  # en dash
+
+def test_classify_years_with_experience_far_after_the_number():
+    text = "- 3+ years of non-internship professional software development experience - Bachelor's degree"
+    assert classify_by_description(text) == "reject"
+
 def test_classify_junior_by_phrase():
     assert classify_by_description("Great for a recent graduate. Entry level role.") == "junior"
-    assert classify_by_description("חיפשנו בוגר/ת תואר ראשון") == "junior"
+    assert classify_by_description("מחפשים בוגרים טריים להצטרף לצוות") == "junior"
     assert classify_by_description("ללא ניסיון קודם") == "junior"
+
+def test_classify_hebrew_degree_requirement_is_not_junior():
+    # "בוגר.ת תואר ראשון בהנדסת חשמל" is a standard requirement on senior roles too
+    assert classify_by_description("דרישות התפקיד: בוגר.ת תואר ראשון לפחות בהנדסת חשמל") == "maybe"
+    assert classify_by_description("בוגר/ת תואר ראשון בהנדסה") == "maybe"
 
 def test_classify_reject_beats_junior():
     # Rules are ordered: a 5+ years requirement wins over a stray "graduate" phrase
@@ -557,6 +596,376 @@ def test_classify_ignores_years_not_about_experience():
 def test_classify_engineer_i_is_case_sensitive():
     assert classify_by_description("Software Engineer I") == "junior"
     assert classify_by_description("the engineer i spoke with") == "maybe"
+
+def test_fetch_job_description_prefers_api_description():
+    from job_scraper import fetch_job_description
+    job = {"title": "DevOps Engineer", "link": "https://example.com/x", "description": "6+ years of experience"}
+    assert fetch_job_description(job, {}) == "6+ years of experience"
+
+def test_html_to_text_strips_tags_and_entities():
+    from api_fetchers import _html_to_text
+    assert _html_to_text("<p>6+&nbsp;years of <strong>experience</strong></p>") == "6+ years of experience"
+
+def test_comeet_job_carries_description(monkeypatch):
+    import api_fetchers
+    class _Page:
+        text = '{"token": "tok"}'
+        def raise_for_status(self): pass
+    class _Api:
+        def raise_for_status(self): pass
+        def json(self):
+            return [{"name": "DevOps Engineer", "uid": "BB.1", "url_active_page": "https://c/x",
+                     "location": {"city": "Tel Aviv"}, "time_updated": "2026-11-01T00:00:00",
+                     "details": [{"name": "Requirements", "value": "<li>6+ years of experience</li>"}]}]
+    monkeypatch.setattr(api_fetchers.requests, "get", lambda *a, **k: _Page())
+    seen = {}
+    def _fake_request(method, url, **k):
+        seen["params"] = k.get("params")
+        return _Api()
+    monkeypatch.setattr(api_fetchers, "_request", _fake_request)
+    jobs = api_fetchers._fetch_comeet("https://www.comeet.com/jobs/Claroty/F2.004", "Claroty")
+    assert seen["params"]["details"] == "true"
+    assert jobs[0]["description"] == "6+ years of experience"
+    assert classify_by_description(jobs[0]["description"], jobs[0]["title"]) == "reject"
+
+def test_eightfold_jobs_carry_description_ref(monkeypatch):
+    import api_fetchers
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"data": {"count": 1, "positions": [
+                {"id": 790317089826, "name": "Devops Engineer", "positionUrl": "/careers/job/790317089826",
+                 "locations": ["Rehovot,ISR"], "postedTs": 1793836800}]}}
+    monkeypatch.setattr(api_fetchers, "_request", lambda *a, **k: _Resp())
+    jobs = api_fetchers._eightfold("https://careers.appliedmaterials.com", "appliedmaterials.com", "", "Applied Materials")
+    assert jobs[0]["desc_ref"] == {"type": "eightfold", "base": "https://careers.appliedmaterials.com",
+                                   "domain": "appliedmaterials.com", "id": 790317089826}
+
+def test_fetch_description_eightfold(monkeypatch):
+    import api_fetchers
+    seen = {}
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"data": {"jobDescription": "<p>5+ years of <b>experience</b></p>"}}
+    def _fake(method, url, **k):
+        seen.update(url=url, params=k["params"]); return _Resp()
+    monkeypatch.setattr(api_fetchers, "_request", _fake)
+    text = api_fetchers.fetch_description({"type": "eightfold", "base": "https://x.com", "domain": "x.com", "id": 7})
+    assert text == "5+ years of experience"
+    assert seen["url"].endswith("/api/pcsx/position_details") and seen["params"]["position_id"] == 7
+
+def test_fetch_description_returns_empty_on_failure(monkeypatch):
+    import api_fetchers
+    def _boom(*a, **k): raise ConnectionError("x")
+    monkeypatch.setattr(api_fetchers, "_request", _boom)
+    assert api_fetchers.fetch_description({"type": "eightfold", "base": "b", "domain": "d", "id": 1}) == ""
+    assert api_fetchers.fetch_description({"type": "unknown"}) == ""
+
+def test_fetch_job_description_uses_desc_ref(monkeypatch):
+    import job_scraper
+    monkeypatch.setattr(job_scraper, "fetch_description", lambda ref: "from api " + str(ref["id"]))
+    assert job_scraper.fetch_job_description({"title": "t", "link": "https://x", "desc_ref": {"id": 5}}, {}) == "from api 5"
+
+def test_desc_ref_from_workday_link():
+    from api_fetchers import desc_ref_from_link
+    ref = desc_ref_from_link("https://cisco.wd5.myworkdayjobs.com/Cisco_Careers/job/Caesarea-Israel/Logic-Design-Engineer_2012211/apply")
+    assert ref == {"type": "workday", "base": "https://cisco.wd5.myworkdayjobs.com", "tenant": "cisco",
+                   "board": "Cisco_Careers", "path": "job/Caesarea-Israel/Logic-Design-Engineer_2012211"}
+    # the locale prefix the Workday fetcher puts in links is skipped too
+    ref2 = desc_ref_from_link("https://intel.wd1.myworkdayjobs.com/en-US/External/job/Haifa/Eng_JR1")
+    assert ref2["board"] == "External" and ref2["path"] == "job/Haifa/Eng_JR1"
+    assert desc_ref_from_link("https://example.com/job/1") is None
+    assert desc_ref_from_link("") is None
+
+def test_fetch_description_workday(monkeypatch):
+    import api_fetchers
+    seen = {}
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"jobPostingInfo": {"jobDescription": "<p>5+ years of experience</p>"}}
+    def _fake(method, url, **k):
+        seen["url"] = url; return _Resp()
+    monkeypatch.setattr(api_fetchers, "_request", _fake)
+    ref = api_fetchers.desc_ref_from_link("https://cisco.wd5.myworkdayjobs.com/Cisco_Careers/job/X/Y_1/apply")
+    assert api_fetchers.fetch_description(ref) == "5+ years of experience"
+    assert seen["url"] == "https://cisco.wd5.myworkdayjobs.com/wday/cxs/cisco/Cisco_Careers/job/X/Y_1"
+
+def test_fetch_job_description_detects_workday_link(monkeypatch):
+    import job_scraper
+    monkeypatch.setattr(job_scraper, "fetch_description", lambda ref: "wd:" + ref["type"])
+    job = {"title": "t", "link": "https://cisco.wd5.myworkdayjobs.com/Cisco_Careers/job/X/Y_1/apply"}
+    assert job_scraper.fetch_job_description(job, {}) == "wd:workday"
+
+def test_html_to_text_handles_escaped_markup():
+    from api_fetchers import _html_to_text
+    assert _html_to_text("&lt;div&gt;&lt;p&gt;3+ years &amp;amp; more&lt;/p&gt;&lt;/div&gt;") == "3+ years & more"
+
+def test_greenhouse_spec_requests_content_and_keeps_description(monkeypatch):
+    import api_fetchers
+    seen = {}
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"jobs": [{"title": "Software Engineer", "absolute_url": "https://x/1", "id": 1,
+                              "location": {"name": "Tel Aviv"}, "updated_at": "2026-11-01T00:00:00",
+                              "content": "&lt;p&gt;6+ years of experience&lt;/p&gt;"}]}
+    def _fake(method, url, **k):
+        seen["params"] = k.get("params"); return _Resp()
+    monkeypatch.setattr(api_fetchers, "_request", _fake)
+    spec = {"type": "json", "url": "https://boards-api.greenhouse.io/v1/boards/catonetworks/jobs",
+            "list": "jobs", "title": "title", "link": "absolute_url", "location": "location.name",
+            "date": "updated_at", "id": "id"}
+    jobs = api_fetchers._fetch_json(spec, "Cato Networks")
+    assert seen["params"]["content"] == "true"
+    assert jobs[0]["description"] == "6+ years of experience"
+    assert "description" not in spec  # caller's spec isn't mutated
+
+def test_amazon_job_description_uses_basic_but_not_preferred_qualifications(monkeypatch):
+    import api_fetchers
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"hits": 1, "jobs": [{
+                "title": "Embedded Software Engineer", "job_path": "/en/jobs/1/x", "id_icims": "1",
+                "description": "<p>Build firmware.</p>",
+                "basic_qualifications": "- 1+ years of experience<br/>- BSc",
+                "preferred_qualifications": "- 7+ years of experience"}]}
+    monkeypatch.setattr(api_fetchers, "_request", lambda *a, **k: _Resp())
+    job = api_fetchers._fetch_amazon("https://www.amazon.jobs/x", "Amazon")[0]
+    assert "1+ years" in job["description"] and "7+ years" not in job["description"]
+    assert classify_by_description(job["description"], job["title"]) == "junior"
+
+def test_short_page_text_is_not_a_description(monkeypatch):
+    import job_scraper
+    nav = "Home Teams Locations Job categories My career " * 4  # a JS app's nav, ~190 chars
+    monkeypatch.setattr(job_scraper, "try_static_fetch", lambda url: f"<html><body><main>{nav}</main></body></html>")
+    assert job_scraper.fetch_job_description({"title": "t", "link": "https://www.amazon.jobs/en/jobs/1"}, {}) == ""
+
+def test_json_spec_description_from_several_paths(monkeypatch):
+    import api_fetchers
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return [{"jobId": 1, "jobTitle": "Algorithm Developer", "area": "North", "openDate": "2026-11-01T00:00:00",
+                     "description": "Join us.&lt;div&gt;3+ years of experience&lt;/div&gt;",
+                     "requirements": "&lt;br&gt;BSc"}]
+    monkeypatch.setattr(api_fetchers, "_request", lambda *a, **k: _Resp())
+    spec = {"type": "json", "url": "https://elbitsystemscareer.com/cron/jobs.json", "list": "",
+            "title": "jobTitle", "link_template": "https://x/?jobId={jobId}", "location": "area",
+            "date": "openDate", "id": "jobId", "description": ["description", "requirements"]}
+    job = api_fetchers._fetch_json(spec, "Elbit")[0]
+    assert job["description"] == "Join us. 3+ years of experience BSc"
+    assert classify_by_description(job["description"], job["title"]) == "reject"
+
+def test_comeet_json_spec_requests_details_and_joins_sections(monkeypatch):
+    import api_fetchers
+    seen = {}
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return [{"name": "DevOps Engineer", "url_active_page": "https://c/x", "uid": "1",
+                     "location": {"city": "Tel Aviv"}, "time_updated": "2026-11-01T00:00:00",
+                     "details": [{"name": "Description", "value": "<p>Build things</p>"},
+                                 {"name": "Requirements", "value": "<li>5+ years of experience</li>"}]}]
+    def _fake(method, url, **k):
+        seen["params"] = k.get("params"); return _Resp()
+    monkeypatch.setattr(api_fetchers, "_request", _fake)
+    spec = {"type": "json", "url": "https://www.comeet.co/careers-api/2.0/company/43.001/positions",
+            "params": {"token": "t", "details": "false"}, "list": "", "title": "name", "link": "url_active_page",
+            "location": ["location.city"], "date": "time_updated", "id": "uid"}
+    job = api_fetchers._fetch_json(spec, "VAST Data")[0]
+    assert seen["params"]["details"] == "true" and seen["params"]["token"] == "t"
+    assert job["description"] == "Build things 5+ years of experience"
+
+def test_ashby_spec_reads_plain_description(monkeypatch):
+    import api_fetchers
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"jobs": [{"id": "1", "title": "Software Engineer", "jobUrl": "https://jobs.ashbyhq.com/x/1",
+                              "location": "Tel Aviv", "publishedAt": "2026-11-01T00:00:00",
+                              "descriptionPlain": "You need 5+ years of experience."}]}
+    monkeypatch.setattr(api_fetchers, "_request", lambda *a, **k: _Resp())
+    job = api_fetchers._fetch_from_spec({"type": "ashby", "board": "snyk"}, "Snyk")[0]
+    assert job["description"] == "You need 5+ years of experience."
+
+def test_oracle_jobs_carry_ref_and_link_is_recognised():
+    import api_fetchers
+    ref = api_fetchers.desc_ref_from_link(
+        "https://hdjq.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/26013084")
+    assert ref == {"type": "oracle", "base": "https://hdjq.fa.us2.oraclecloud.com", "site": "CX_1", "id": "26013084"}
+
+def test_oracle_list_attaches_desc_ref(monkeypatch):
+    import api_fetchers
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"items": [{"TotalJobsCount": 1, "requisitionList": [
+                {"Id": "99", "Title": "DevOps Engineer", "PrimaryLocation": "Israel", "PostedDate": "2026-11-01"}]}]}
+    monkeypatch.setattr(api_fetchers, "_request", lambda *a, **k: _Resp())
+    job = api_fetchers._oracle("https://x.oraclecloud.com", "CX_1", None, None, "Dell")[0]
+    assert job["desc_ref"] == {"type": "oracle", "base": "https://x.oraclecloud.com", "site": "CX_1", "id": "99"}
+
+def test_fetch_description_oracle(monkeypatch):
+    import api_fetchers
+    seen = {}
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"items": [{"ExternalDescriptionStr": "<p>Build things</p>",
+                               "ExternalQualificationsStr": "<li>4+ years of experience</li>"}]}
+    def _fake(method, url, **k):
+        seen.update(url=url, params=k["params"]); return _Resp()
+    monkeypatch.setattr(api_fetchers, "_request", _fake)
+    text = api_fetchers.fetch_description({"type": "oracle", "base": "https://x", "site": "CX_1", "id": "5"})
+    assert text == "Build things 4+ years of experience"
+    assert seen["params"]["finder"] == 'ById;Id="5",siteNumber=CX_1'
+
+def test_taleo_description_is_decoded_from_the_page():
+    import api_fetchers
+    enc = ("%3Cp%3EAt%20least%203%20years%20industry-relevant%20work%20experience%3C/p%3E"
+           "%3Cli%3EHands-on%20%26amp%3B%20L2/L3%20switching%3C/li%3E")
+    page = f"<html>...!|!260000AK!|!!*!{enc}!|!x!|!...!*!{enc}!|!y</html>"  # repeated in a printable copy
+    text = api_fetchers._taleo_description(page)
+    assert text == "At least 3 years industry-relevant work experience Hands-on & L2/L3 switching"
+    assert api_fetchers._taleo_description("<html>nothing here</html>") == ""
+
+def test_desc_ref_recognises_taleo_and_apple_links():
+    from api_fetchers import desc_ref_from_link
+    t = desc_ref_from_link("https://radware.taleo.net/careersection/ex/jobdetail.ftl?job=260000AK")
+    assert t == {"type": "taleo", "url": "https://radware.taleo.net/careersection/ex/jobdetail.ftl?job=260000AK"}
+    a = desc_ref_from_link("https://jobs.apple.com/en-il/details/200694733-1451/embedded-engineer?team=HRDWR")
+    assert a["type"] == "apple"
+    assert desc_ref_from_link("https://radware.taleo.net/careersection/ex/jobsearch.ftl") is None
+
+def test_apple_description_skips_preferred_qualifications():
+    import api_fetchers, json as _json
+    job = {"jobSummary": "Build SW.", "description": "Write drivers.",
+           "minimumQualifications": "1+ years of experience in C", "preferredQualifications": "10 years of experience"}
+    data = {"loaderData": {"jobDetails": {"jobsData": job}}}
+    # the page holds JSON inside a JS string: JSON.parse("<escaped json>")
+    page = 'x window.__staticRouterHydrationData = JSON.parse(' + _json.dumps(_json.dumps(data)) + '); y'
+    text = api_fetchers._apple_description(page)
+    assert "1+ years" in text and "10 years" not in text
+    assert api_fetchers._apple_description("<html></html>") == ""
+
+def test_json_spec_desc_ref_is_attached_with_the_job_id(monkeypatch):
+    import api_fetchers
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"count": 1, "positions": [{"id": 563602813922996, "name": "QA Engineer", "location": "Tel Aviv"}]}
+    monkeypatch.setattr(api_fetchers, "_request", lambda *a, **k: _Resp())
+    spec = {"type": "json", "url": "https://www.careers.teva/api/apply/v2/jobs", "list": "positions",
+            "title": "name", "link_template": "https://www.careers.teva/careers/job/{id}", "location": "location",
+            "id": "id", "desc_ref": {"type": "eightfold", "base": "https://www.careers.teva", "domain": "tevapharm.com"}}
+    job = api_fetchers._fetch_json(spec, "Teva")[0]
+    assert job["desc_ref"] == {"type": "eightfold", "base": "https://www.careers.teva",
+                               "domain": "tevapharm.com", "id": 563602813922996}
+
+def test_job_link_heuristic():
+    from job_scraper import _looks_like_job_link
+    for good in ("https://jobs.intuit.com/job/san-diego/software-engineer/27595/103261394672",
+                 "https://orca.security/about/careers/6161068004/?gh_jid=6161068004",
+                 "https://drivenets.com/career/2C.37B/",
+                 "https://www.amazon.jobs/en/jobs/10605544/verification-engineer"):
+        assert _looks_like_job_link(good), good
+    for bad in ("https://www.silicom-usa.com/cats/edge-ai-solutions/",
+                "https://www.intuit.com/careers/teams/software-engineering/",
+                "https://youtu.be/Tp0hjWKzBKw", "https://www.abra-it.com#jobs", ""):
+        assert not _looks_like_job_link(bad), bad
+
+def test_dedupe_across_sources_drops_the_second_source_only():
+    from job_scraper import dedupe_across_sources
+    seen = {}
+    phenom = [{"title": "Backend Intern", "location": "Herzliya, Israel"},
+              {"title": "Networking PBM", "location": "Ra'anana, Israel"}]
+    workday = [{"title": "Backend Intern", "location": "Herzliya, Israel"},      # same job, other source
+               {"title": "Storage Lead", "location": "Ra'anana, Israel"}]          # only on Workday
+    assert dedupe_across_sources(phenom, "HPE", seen) == phenom
+    kept = dedupe_across_sources(workday, "HPE (Workday)", seen)
+    assert [j["title"] for j in kept] == ["Storage Lead"]
+
+def test_dedupe_never_drops_a_sources_own_jobs():
+    from job_scraper import dedupe_across_sources
+    own = [{"title": "QA Engineer", "location": "Tel Aviv"}, {"title": "QA Engineer", "location": "Tel Aviv"},
+           {"title": "QA Engineer", "location": "Haifa"}]
+    assert len(dedupe_across_sources(own, "Acme", {})) == 3
+
+def test_dedupe_keeps_different_companies_apart():
+    from job_scraper import dedupe_across_sources
+    seen = {}
+    dedupe_across_sources([{"title": "Backend Intern", "location": "Tel Aviv"}], "Wix", seen)
+    kept = dedupe_across_sources([{"title": "Backend Intern", "location": "Tel Aviv"}], "Monday", seen)
+    assert len(kept) == 1
+    # same company, different Oracle instances in brackets: names differ only in the suffix
+    assert len(dedupe_across_sources([{"title": "X", "location": "Y"}], "Oracle Cloud (a)", {})) == 1
+
+def test_run_scraper_end_to_end_with_fake_sources(monkeypatch):
+    """Whole pipeline on made-up sources: title match, description rules, API-vs-HTML
+    gating, location handling for API jobs, and cross-source dedup."""
+    import job_scraper
+
+    class FakeStore:
+        backend_name = "fake"
+        def __init__(self): self.saved = []; self.seen = set()
+        def get_all_sites(self):
+            return [{"name": "Acme", "url": "https://acme.example/careers?location=Israel"},
+                    {"name": "Acme (Workday)", "url": "https://acme.wd1.example/jobs"},
+                    {"name": "Blog Co", "url": "https://blog.example/careers"}]
+        def get_search_queries(self): return []
+        def get_seen_job_ids(self): return set(self.seen)
+        def update_site_status(self, *a, **k): return None
+        def save_new_jobs(self, jobs): self.saved += jobs
+        def rename_job_ids(self, m): pass
+        def update_last_seen(self, ids): pass
+        def delete_stale_jobs(self, keep): pass
+
+    def job(title, link, site, loc, **extra):
+        return {"title": title, "link": link, "site": site, "location": loc, "posted_date": "", **extra}
+
+    sources = {
+        # API source: the page URL says "location=Israel" but the API lists the whole world
+        "Acme": [job("Junior Backend Engineer", "https://acme.example/job/1", "Acme", "Tel Aviv", via_api=True),
+                 job("Junior Backend Engineer", "https://acme.example/job/2", "Acme", "New York", via_api=True),
+                 job("Backend Engineer", "https://acme.example/job/3", "Acme", "Tel Aviv",
+                     via_api=True, description="Requires 6+ years of experience."),
+                 job("DevOps Engineer", "https://acme.example/job/4", "Acme", "Tel Aviv",
+                     via_api=True, description="Entry level, 0-2 years of experience."),
+                 job("Platform Engineer", "https://acme.example/job/5", "Acme", "Haifa",
+                     via_api=True, description="We build platforms.")],
+        # second source of the same company: repeats one job
+        "Acme (Workday)": [job("DevOps Engineer", "https://acme.wd1.example/job/9", "Acme (Workday)", "Tel Aviv",
+                               via_api=True, description="Entry level, 0-2 years of experience.")],
+        # scraped HTML: a blog post whose title contains a field keyword must not become a "maybe"
+        "Blog Co": [job("Software Engineering at Blog Co", "https://blog.example/post/why-we-love-code", "Blog Co", "")],
+    }
+    store = FakeStore()
+    cfg = {"role_keywords": ["junior", "intern"], "field_keywords": ["engineer", "software"],
+           "exclude_keywords": ["senior"], "location_filter": ["israel", "tel aviv", "haifa"]}
+    monkeypatch.setattr(job_scraper, "load_config", lambda: cfg)
+    monkeypatch.setattr(job_scraper, "get_store", lambda c: store)
+    monkeypatch.setattr(job_scraper, "scrape_site", lambda entry, c: [dict(j) for j in sources[entry["name"]]])
+    monkeypatch.setattr(job_scraper, "load_cv_skills", lambda c: {})
+    monkeypatch.setattr(job_scraper, "send_email", lambda *a, **k: None)
+    monkeypatch.setattr(job_scraper, "time", type("T", (), {"sleep": staticmethod(lambda s: None), "time": staticmethod(__import__("time").time)}))
+
+    new = job_scraper.run_scraper()
+    got = {j["title"] + "|" + j["location"]: j.get("category") for j in new}
+    assert got == {
+        "Junior Backend Engineer|Tel Aviv": None,       # matched by title
+        "DevOps Engineer|Tel Aviv": "junior",           # no role in title, description says 0-2 years
+        "Platform Engineer|Haifa": "maybe",             # nothing decisive in the description
+    }
+    # rejected by description (6+ years) -> remembered as a hidden row, not shown
+    assert any(j["title"] == "Backend Engineer" and j["category"] == "rejected" for j in store.saved)
+    assert not any(j["title"] == "Backend Engineer" for j in new)
+    # the New York API job is dropped despite "?location=Israel" in the page URL
+    assert not any(j["location"] == "New York" for j in new)
+    # the Workday copy of the DevOps job is a duplicate of the other source's
+    assert sum(1 for j in new if j["title"] == "DevOps Engineer") == 1
+    # the blog post (scraped, non-job link) never reaches the description step
+    assert not any("Blog Co" in j["title"] for j in store.saved)
 
 def test_categorize_job_maybe():
     assert _categorize_job({"category": "maybe", "matched_roles": []}) == "maybe"
@@ -920,7 +1329,8 @@ def test_scrape_site_uses_api_jobs_when_present(monkeypatch):
     monkeypatch.setattr(job_scraper, "try_static_fetch",
                         lambda url: (_ for _ in ()).throw(AssertionError("should not scrape")))
     jobs = job_scraper.scrape_site({"url": "https://x.example/careers", "name": "X"}, {})
-    assert jobs == [{"title": "API"}]
+    assert [j["title"] for j in jobs] == ["API"]
+    assert jobs[0]["via_api"] is True  # lets matches_location ignore the page URL's location filter
 
 
 # --- sharp-drop detection ---

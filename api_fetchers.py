@@ -34,7 +34,7 @@ _HEADERS = {
     "Accept": "application/json",
 }
 _TIMEOUT = 20
-_MAX_PAGES = 25  # safety cap on pagination per site
+_MAX_PAGES = 100  # safety cap on pagination per site (Eightfold pages hold only 10 jobs: NVIDIA alone has ~400 in Israel)
 
 
 def _job(title, link, site, location="", posted_date="", external_id=None):
@@ -129,15 +129,20 @@ def _fetch_greenhouse(url, site_name):
     r = _request(
         "GET",
         f"https://boards-api.greenhouse.io/v1/boards/{parts[0]}/jobs",
+        params={"content": "true"},  # full descriptions, in the same single request
         headers=_HEADERS, timeout=_TIMEOUT,
     )
     r.raise_for_status()
-    return [
-        _job(j.get("title"), j.get("absolute_url"), site_name,
-             (j.get("location") or {}).get("name", ""),
-             (j.get("updated_at") or "")[:10], j.get("id"))
-        for j in r.json().get("jobs", [])
-    ]
+    jobs = []
+    for j in r.json().get("jobs", []):
+        job = _job(j.get("title"), j.get("absolute_url"), site_name,
+                   (j.get("location") or {}).get("name", ""),
+                   (j.get("updated_at") or "")[:10], j.get("id"))
+        desc = _html_to_text(j.get("content", ""))
+        if desc:
+            job["description"] = desc[:5000]
+        jobs.append(job)
+    return jobs
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +164,9 @@ def _fetch_comeet(url, site_name):
     r = _request(
         "GET",
         f"https://www.comeet.com/careers-api/2.0/company/{uid}/positions",
-        params={"token": m.group(1), "details": "false"},
+        # details=true: the hosted job page is JS-rendered (scraping it yields an empty
+        # template), so the description has to come from the API.
+        params={"token": m.group(1), "details": "true"},
         headers=_HEADERS, timeout=_TIMEOUT,
     )
     r.raise_for_status()
@@ -167,12 +174,123 @@ def _fetch_comeet(url, site_name):
     for pos in r.json():
         loc = pos.get("location") or {}
         location = ", ".join(x for x in (loc.get("city"), loc.get("name")) if x)
-        jobs.append(_job(
+        job = _job(
             pos.get("name"),
             pos.get("url_comeet_hosted_page") or pos.get("url_active_page"),
             site_name, location, (pos.get("time_updated") or "")[:10], pos.get("uid"),
-        ))
+        )
+        desc = _html_to_text(" ".join(d.get("value") or "" for d in (pos.get("details") or [])))
+        if desc:
+            job["description"] = desc[:5000]
+        jobs.append(job)
     return jobs
+
+
+def desc_ref_from_link(link: str):
+    """A desc_ref for jobs whose link alone identifies the posting (Workday), else None.
+    Lets us read descriptions of jobs that came through other front-ends (Cisco's
+    Phenom site links straight to Workday) and of jobs already stored in the DB."""
+    p = urlparse(link or "")
+    if p.netloc.endswith("taleo.net") and p.path.endswith("/jobdetail.ftl") and _query(link).get("job"):
+        return {"type": "taleo", "url": link}
+    if p.netloc == "jobs.apple.com" and "/details/" in p.path:
+        return {"type": "apple", "url": link}
+    m = re.search(r"^/hcmUI/CandidateExperience/[^/]+/sites/([^/]+)/job/([^/?#]+)", p.path)
+    if m:  # Oracle HCM
+        return {"type": "oracle", "base": f"{p.scheme}://{p.netloc}", "site": m.group(1), "id": m.group(2)}
+    if not p.netloc.endswith("myworkdayjobs.com"):
+        return None
+    parts = [s for s in p.path.split("/") if s]
+    if parts and re.fullmatch(r"[a-z]{2}-[A-Za-z]{2}", parts[0]):
+        parts = parts[1:]
+    if parts and parts[-1] == "apply":
+        parts = parts[:-1]
+    if "job" not in parts or parts.index("job") == 0:
+        return None
+    i = parts.index("job")
+    return {"type": "workday", "base": f"{p.scheme}://{p.netloc}", "tenant": p.netloc.split(".")[0],
+            "board": parts[i - 1], "path": "/".join(parts[i:])}
+
+
+def fetch_description(ref: dict) -> str:
+    """Fetch one job's description via the ATS API, given a job's "desc_ref".
+    Returns "" if the ATS isn't supported or the request fails."""
+    try:
+        if ref.get("type") == "apple":
+            r = _request("GET", ref["url"], headers={"User-Agent": _HEADERS["User-Agent"]}, timeout=_TIMEOUT)
+            r.raise_for_status()
+            return _apple_description(r.text)
+        if ref.get("type") == "taleo":
+            r = _request("GET", ref["url"], headers={"User-Agent": _HEADERS["User-Agent"]}, timeout=_TIMEOUT)
+            r.raise_for_status()
+            return _taleo_description(r.text)
+        if ref.get("type") == "oracle" and ref.get("id"):
+            r = _request(
+                "GET", f"{ref['base']}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails",
+                params={"expand": "all", "onlyData": "true",
+                        "finder": f'ById;Id="{ref["id"]}",siteNumber={ref["site"]}'},
+                headers=_HEADERS, timeout=_TIMEOUT,
+            )
+            r.raise_for_status()
+            item = (r.json().get("items") or [{}])[0]
+            return _html_to_text(" ".join(item.get(k) or "" for k in (
+                "ExternalDescriptionStr", "ExternalResponsibilitiesStr",
+                "ExternalQualificationsStr")))[:5000]
+        if ref.get("type") == "workday":
+            r = _request(
+                "GET", f"{ref['base']}/wday/cxs/{ref['tenant']}/{ref['board']}/{ref['path']}",
+                headers=_HEADERS, timeout=_TIMEOUT,
+            )
+            r.raise_for_status()
+            return _html_to_text((r.json().get("jobPostingInfo") or {}).get("jobDescription", ""))[:5000]
+        if ref.get("type") == "eightfold" and ref.get("id"):
+            r = _request(
+                "GET", f"{ref['base']}/api/pcsx/position_details",
+                params={"position_id": ref["id"], "domain": ref["domain"], "hl": "en"},
+                headers=_HEADERS, timeout=_TIMEOUT,
+            )
+            r.raise_for_status()
+            return _html_to_text((r.json().get("data") or {}).get("jobDescription", ""))[:5000]
+    except Exception:
+        pass
+    return ""
+
+
+def _apple_description(page: str) -> str:
+    """jobs.apple.com details pages carry the posting in window.__staticRouterHydrationData
+    (JSON inside a JS string). Preferred qualifications are left out: they're wishes."""
+    m = re.search(r'__staticRouterHydrationData\s*=\s*JSON\.parse\("(.*?)"\);', page, re.S)
+    if not m:
+        return ""
+    try:
+        data = json.loads(json.loads('"' + m.group(1) + '"'))
+        job = data["loaderData"]["jobDetails"]["jobsData"]
+    except (ValueError, KeyError, TypeError):
+        return ""
+    return " ".join(str(job.get(k) or "") for k in
+                    ("jobSummary", "description", "minimumQualifications")).strip()[:5000]
+
+
+def _taleo_description(page: str) -> str:
+    """Taleo's jobdetail.ftl embeds the description as percent-encoded HTML following a
+    '!*!' delimiter inside a JS string, not as markup (so a normal page parse sees none)."""
+    from urllib.parse import unquote
+    seen, parts = set(), []
+    for chunk in re.findall(r"!\*!([^!'\"]*%3[Cc][^!'\"]*)", page):
+        text = _html_to_text(unquote(chunk.replace("%5C", "")))
+        if text and text not in seen:  # the page repeats the text in a printable copy
+            seen.add(text)
+            parts.append(text)
+    return " ".join(parts)[:5000]
+
+
+def _html_to_text(markup: str) -> str:
+    """Strip tags/entities from an HTML fragment returned by an ATS API."""
+    import html
+    # Some APIs (Greenhouse) return the markup itself HTML-escaped ("&lt;p&gt;"), so
+    # unescape once before stripping tags and once after for the remaining entities.
+    markup = html.unescape(markup or "") if "&lt;" in (markup or "") else (markup or "")
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", markup))).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -203,10 +321,15 @@ def _eightfold(base, domain, query, site_name):
             posted = ""
             if pos.get("postedTs"):
                 posted = datetime.fromtimestamp(pos["postedTs"], timezone.utc).strftime("%Y-%m-%d")
-            jobs.append(_job(
+            job = _job(
                 pos.get("name"), f"{base}{pos.get('positionUrl', '')}", site_name,
                 ", ".join(pos.get("locations") or []), posted, pos.get("id"),
-            ))
+            )
+            # The job page is a JS app (a plain fetch yields nothing useful) and the
+            # list has no description — keep a reference so the text can be pulled
+            # from the details endpoint later, only for the jobs that need it.
+            job["desc_ref"] = {"type": "eightfold", "base": base, "domain": domain, "id": pos.get("id")}
+            jobs.append(job)
         start += len(positions)
         if not positions or start >= data.get("count", 0):
             break
@@ -251,12 +374,16 @@ def _oracle(base, site, location_id, keyword, site_name):
         item = items[0] if items else {}
         reqs = item.get("requisitionList") or []
         for req in reqs:
-            jobs.append(_job(
+            job = _job(
                 req.get("Title"),
                 f"{base}/hcmUI/CandidateExperience/en/sites/{site}/job/{req.get('Id')}",
                 site_name, req.get("PrimaryLocation", ""), req.get("PostedDate", ""),
                 req.get("Id"),
-            ))
+            )
+            # The list has no description (and the job page is a JS app): pull it
+            # from the requisition-details endpoint later, only for jobs that need it.
+            job["desc_ref"] = {"type": "oracle", "base": base, "site": site, "id": req.get("Id")}
+            jobs.append(job)
         offset += len(reqs)
         if not reqs or offset >= item.get("TotalJobsCount", 0):
             break
@@ -281,11 +408,19 @@ def _fetch_amazon(url, site_name):
         data = r.json()
         batch = data.get("jobs") or []
         for j in batch:
-            jobs.append(_job(
+            job = _job(
                 j.get("title"), f"https://www.amazon.jobs{j.get('job_path', '')}",
                 site_name, j.get("normalized_location") or j.get("location", ""),
                 j.get("posted_date", ""), j.get("id_icims") or j.get("id"),
-            ))
+            )
+            # The job page is JS-rendered, but the list carries the text. Only the
+            # *basic* qualifications ("3+ years of ...") are requirements; the
+            # preferred ones are wishes and would wrongly reject junior roles.
+            desc = _html_to_text(" ".join(
+                (j.get(k) or "") for k in ("description", "basic_qualifications")))
+            if desc:
+                job["description"] = desc[:5000]
+            jobs.append(job)
         offset += len(batch)
         if not batch or offset >= data.get("hits", 0):
             break
@@ -386,6 +521,15 @@ def _dig(obj, path):
     return obj
 
 
+def _raw_text(value) -> str:
+    """A text field as a string; a list of {"name","value"} sections (Comeet) is joined."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return " ".join((v.get("value") or "") if isinstance(v, dict) else str(v) for v in value)
+    return str(value)
+
+
 def _fetch_json(spec, site_name):
     """
     spec keys: url, [method, body, params], list (dotted path to the job array,
@@ -396,6 +540,14 @@ def _fetch_json(spec, site_name):
     """
     method = spec.get("method", "GET").upper()
     page = spec.get("paginate")  # {"param": "start", "total": "count"}: offset paging
+    if "boards-api.greenhouse.io" in spec["url"] and not spec.get("description"):
+        # Greenhouse returns every job's full text in the list when asked
+        spec = {**spec, "params": {**(spec.get("params") or {}), "content": "true"},
+                "description": "content"}
+    if "careers-api/2.0/company" in spec["url"] and not spec.get("description"):
+        # Comeet only includes the job text with details=true (and its hosted pages are JS-rendered)
+        spec = {**spec, "params": {**(spec.get("params") or {}), "details": "true"},
+                "description": "details"}
     items, offset = [], 0
     for _ in range(_MAX_PAGES if page else 1):
         kwargs = {"headers": _HEADERS, "timeout": _TIMEOUT}
@@ -426,12 +578,22 @@ def _fetch_json(spec, site_name):
         else:
             link = _dig(it, spec.get("link", "")) or ""
         loc = ", ".join(str(v) for v in (_dig(it, p) for p in locs) if v)
-        jobs.append(_job(
+        job = _job(
             html.unescape(str(_dig(it, spec["title"]) or "")), link,
             (_dig(it, spec["site"]) if spec.get("site") else None) or site_name,
             loc, str(_dig(it, spec["date"]) or "")[:10] if spec.get("date") else "",
             _dig(it, spec["id"]) if spec.get("id") else None,
-        ))
+        )
+        if spec.get("desc_ref") and spec.get("id") and _dig(it, spec["id"]):
+            # the list has no text; point at the ATS's details endpoint (see fetch_description)
+            job["desc_ref"] = {**spec["desc_ref"], "id": _dig(it, spec["id"])}
+        if spec.get("description"):  # optional path (or list of paths) to the posting's text
+            paths = spec["description"]
+            paths = [paths] if isinstance(paths, str) else paths
+            desc = _html_to_text(" ".join(_raw_text(_dig(it, p)) for p in paths))
+            if desc:
+                job["description"] = desc[:5000]
+        jobs.append(job)
     return jobs
 
 
@@ -492,7 +654,7 @@ def _comeet_spec(uid, token):
 def _ashby_spec(board):
     return {"type": "json", "url": f"https://api.ashbyhq.com/posting-api/job-board/{board}",
             "list": "jobs", "title": "title", "link": "jobUrl", "location": "location",
-            "date": "publishedAt", "id": "id"}
+            "date": "publishedAt", "id": "id", "description": "descriptionPlain"}
 
 
 def _fetch_taleo(spec, site_name):

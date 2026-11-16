@@ -442,6 +442,37 @@ def dismiss_job(job_id: str) -> bool:
         return False
 
 
+def update_job(job_id: str, fields: dict) -> bool:
+    """Patch columns on one stored job. Returns True on success."""
+    try:
+        resp = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/jobs",
+            headers=_headers(),
+            params={"id": f"eq.{job_id}"},
+            json=fields,
+        )
+        return resp.ok
+    except Exception as e:
+        logger.error(f"DB: Failed to update job {job_id}: {e}")
+        return False
+
+
+def get_unclassified_jobs(limit: int = 5000, include_maybe: bool = False) -> list[dict]:
+    """Visible jobs with no category and no role match — i.e. stored before
+    description-based classification existed (or before its columns did).
+    include_maybe also returns jobs already marked 'maybe', to re-check them."""
+    category = "or(category.is.null,category.eq.maybe)" if include_maybe else "category.is.null"
+    resp = requests.get(
+        f"{SUPABASE_URL}/rest/v1/jobs",
+        headers=_headers(),
+        params={"select": "id,title,company,link,matched_roles,category,dismissed",
+                "and": f"({category},or(dismissed.is.null,dismissed.eq.false))",
+                "limit": limit},
+    )
+    resp.raise_for_status()
+    return [r for r in resp.json() if not r.get("matched_roles")]
+
+
 def mark_job_clicked(job_id: str):
     """Record that the user clicked through to a job's listing."""
     try:

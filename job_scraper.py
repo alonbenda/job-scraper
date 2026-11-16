@@ -28,7 +28,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, parse_qsl, urlencode
 
-from api_fetchers import fetch_via_api
+from api_fetchers import fetch_via_api, fetch_description, desc_ref_from_link
 from job_store import get_store
 
 # ---------------------------------------------------------------------------
@@ -39,6 +39,7 @@ SCRIPT_DIR = Path(__file__).parent
 CONFIG_FILE = SCRIPT_DIR / "config.json"
 SEEN_JOBS_FILE = SCRIPT_DIR / "seen_jobs.json"
 CV_FILE = SCRIPT_DIR / "cv_skills.json"  # Cached parsed CV skills
+MIN_DESC_CHARS = 300  # Shorter page text is a JS app's nav/header, not a job description
 MAX_DESC_FETCHES_PER_RUN = 100  # Cap on description fetches for jobs without a role keyword in the title
 LOG_FILE = SCRIPT_DIR / "scraper.log"
 
@@ -691,6 +692,8 @@ def scrape_site(url_entry: dict, config: dict) -> list[dict]:
     # to scraping just like on a failure.
     api_jobs = fetch_via_api(url, site_name, url_entry.get("api"))
     if api_jobs:
+        for j in api_jobs:
+            j["via_api"] = True  # see matches_location: the page URL's location filter doesn't apply
         return api_jobs
     if api_jobs is not None:
         logger.info(f"  [{site_name}] API returned 0 jobs, falling back to scraping")
@@ -775,6 +778,40 @@ def matches_job(title: str, role_keywords: list[str], field_keywords: list[str],
     return None
 
 
+_JOB_LINK_RE = re.compile(
+    r"/jobs?/|/positions?/|/openings?/|/vacanc|/postings?/|/requisitions?/|/details/|"
+    r"job[_-]?id|gh_jid|/career/[\w.-]+/?$", re.I)
+
+
+def _looks_like_job_link(link: str) -> bool:
+    """A scraped link that plausibly points at one posting (/job/..., ?gh_jid=...) rather
+    than a product page, blog post, team page or a section heading of the careers page."""
+    return bool(_JOB_LINK_RE.search(link or ""))
+
+
+def dedupe_across_sources(jobs: list[dict], entry_name: str, seen: dict) -> list[dict]:
+    """
+    Drop jobs another configured source of the SAME company already listed. A company
+    can be configured twice (HPE: its Phenom site and its Workday board return the same
+    postings); each copy gets a different ID because the company name is part of it, so
+    every such job was stored and notified twice.
+
+    `seen` maps (company, title, city) -> the source entry that claimed it. Only a
+    different entry loses, so a source never drops its own jobs (multi-location
+    postings, two teams hiring the same title). run_scraper processes sources in name
+    order, which keeps the winner stable between runs — otherwise it would flip and
+    the same job would keep re-appearing as new under the other name.
+    """
+    company = re.sub(r"\s*\(.*?\)\s*", " ", entry_name).strip().lower()
+    kept = []
+    for job in jobs:
+        city = re.split(r"[,/;-]", job.get("location", "") or "")[0].strip().lower()
+        key = (company, _norm_text(job.get("title", "")), city)
+        if seen.setdefault(key, entry_name) == entry_name:
+            kept.append(job)
+    return kept
+
+
 def matches_candidate(title: str, role_keywords: list[str], field_keywords: list[str],
                       exclude_keywords: list[str] = None) -> list[str]:
     """
@@ -804,21 +841,25 @@ _JUNIOR_RE = re.compile(
     r'\b(?:entry[- ]level|new\s+grads?|recent\s+graduates?|fresh\s+graduates?|'
     r'graduate\s+(?:program|role|position|engineer|developer)|early[- ]career|trainee|'
     r'no\s+(?:prior\s+|previous\s+)?experience\s+(?:is\s+)?(?:required|needed|necessary))\b'
-    r'|ללא\s+ניסיון|ללא\s+צורך\s+בניסיון|בוגר(?:ת|י|ות)?\b|שנתיים\s+ניסיון|ניסיון\s+של\s+שנתיים'
+    # NOT a bare "בוגר": "בוגר.ת תואר ראשון" is an ordinary degree requirement, not entry level
+    r'|ללא\s+ניסיון|ללא\s+צורך\s+בניסיון|בוגר(?:ים|ות|י)?[.\s/]*(?:ות\s+)?טרי(?:ים|ות)?|בתחילת\s+דרכ|שנתיים\s+ניסיון|ניסיון\s+של\s+שנתיים'
     r'|\b(?-i:(?:Engineer|Developer)\s+I(?![A-Za-z]))',  # case-sensitive on purpose: "Engineer I", not "engineer i will"
     re.I)
 
 
-def _extract_experience_years(text: str) -> list[int]:
-    """Lowest bound of every 'N years' mention that is about experience."""
+def _extract_experience_years(text: str) -> list[tuple[int, int | None]]:
+    """(low, high) of every 'N years' / 'N-M years' mention that is about experience;
+    high is None for a single number or an 'N+' form."""
     found = []
     for rx in (_YEARS_EN_RE, _YEARS_HE_RE):
         for m in rx.finditer(text):
-            window = text[max(0, m.start() - 60): m.end() + 60].lower()
+            # "experience" usually follows: "3+ years of non-internship professional
+            # software development experience" is 62 chars after "years"
+            window = text[max(0, m.start() - 60): m.end() + 110].lower()
             if "experience" in window or "ניסיון" in window:
-                found.append(int(m.group(1)))
+                found.append((int(m.group(1)), int(m.group(2)) if m.group(2) else None))
     if re.search(r'שנתיים', text) and "ניסיון" in text:
-        found.append(2)
+        found.append((2, None))
     return found
 
 
@@ -831,12 +872,45 @@ def classify_by_description(text: str, title: str = "") -> str:
     """
     full = f"{title}\n{text or ''}"
     years = _extract_experience_years(full)
-    if any(y >= 3 for y in years) or _SENIOR_RE.search(full):
+    if any(low >= 3 for low, _ in years) or _SENIOR_RE.search(full):
         return "reject"
-    if (years and min(years) <= 2) or _JUNIOR_RE.search(full):
+    # A single number is junior up to 2 years; a range only if it tops out at 3
+    # ("0-2", "1-3" yes — "2-4" is mid-level, left as 'maybe').
+    if any((high <= 3) if high is not None else (low <= 2) for low, high in years) \
+            or _JUNIOR_RE.search(full):
         return "junior"
     return "maybe"
 
+
+
+# Places seen on careers-site locations that the plain substring list in
+# matches_location misses (US states spelled out, more cities/countries, and
+# region labels like APAC). Whole-word match, so "Perth" doesn't hit "Perthshire"
+# style accidents and short tokens don't match inside other words.
+_FOREIGN_EXTRA_RE = re.compile(r"\b(?:" + "|".join([
+    # US states spelled out (the list above only has ", XX" abbreviations)
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware",
+    "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky",
+    "louisiana", "maryland", "massachusetts", "michigan", "minnesota", "mississippi", "missouri",
+    "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico", "north carolina",
+    "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina",
+    "south dakota", "tennessee", "texas", "utah", "vermont", "virginia", "washington", "west virginia",
+    "wisconsin", "wyoming", "puerto rico",
+    # US cities / areas
+    "raleigh", "philadelphia", "nashville", "nashua", "bentonville", "salt lake city", "overland park",
+    "waco", "pittsburgh", "minneapolis", "west coast", "east coast", "midwest",
+    r"remote\s*\(?\s*us(?:a)?\s*\)?", r"us\s*[-–]\s*remote", r"remote\s*[-–,]?\s*us(?:a)?",
+    # other countries / cities
+    "ukraine", "kyiv", "kiev", "iceland", r"reykjav[ií]k", r"k[oó]pavogur", "bangkok", "perth", "bristol",
+    "bengaluru", "uruguay", "south africa", "united arab emirates", "uae", "dubai", "abu dhabi", "saudi arabia",
+    "egypt", "cyprus", "limassol", "nicosia", "bulgaria", "sofia", "serbia", "belgrade", "lithuania", "vilnius",
+    "estonia", "tallinn", "latvia", "riga", "croatia", "zagreb", "slovakia", "bratislava", "slovenia",
+    "luxembourg", "new zealand", "auckland", "pakistan", "bangladesh", "sri lanka", "russia", "moscow",
+    "kazakhstan", "peru", "ecuador", "venezuela", "costa rica", "panama", "guatemala", "kenya", "nigeria",
+    "fiji", "adelaide", "brisbane", "scotland", "dundee", "wales", "england", "edinburgh", "glasgow",
+    # region labels
+    "apac", "emea", "latam", "nordics", "benelux", "iberia", "americas?", "dach",
+]) + r")\b")
 
 
 def matches_location(job: dict, location_filters: list[str]) -> bool:
@@ -870,8 +944,11 @@ def matches_location(job: dict, location_filters: list[str]) -> bool:
         "rehovot", "netanya", "modiin", "locationId=30000000",
         "region%5B%5D=TA", "location=telaviv",
     ]
+    # Not for API jobs: an API lists a company's jobs worldwide and ignores the
+    # "?location=Israel" in the careers-page URL, so that URL says nothing about
+    # where each job actually is (it let New York / London jobs through).
     source_url_lower = job.get("source_url", "").lower()
-    if any(ind in source_url_lower for ind in url_indicators):
+    if not job.get("via_api") and any(ind in source_url_lower for ind in url_indicators):
         return True
 
     # Check if any Israeli location appears in job info
@@ -908,10 +985,14 @@ def matches_location(job: dict, location_filters: list[str]) -> bool:
         "bangalore", "hyderabad", "mumbai", "delhi", "pune", "chennai",
         "singapore", "tokyo", "shanghai", "beijing", "seoul",
         "sao paulo", "mexico city", "buenos aires",
+        "mountain view", "sunnyvale", "santa clara", "palo alto", "menlo park", "redmond", "bellevue",
+        "cupertino", "irvine", "plano", "tempe", "scottsdale", "san mateo", "fremont", "milpitas",
     ]
     for foreign in foreign_indicators:
         if foreign in text_to_check:
             return False
+    if _FOREIGN_EXTRA_RE.search(text_to_check):
+        return False
 
     # PERMISSIVE: if we can't determine location, include it (better to include than miss)
     return True
@@ -1285,6 +1366,17 @@ def fetch_job_description(job: dict, config: dict) -> str:
     Fetch the full job description from the job's link.
     Tries static fetch first, then Selenium if needed.
     """
+    # Some ATS APIs (Comeet) hand us the description directly — their hosted pages
+    # are JS-rendered, so fetching the link would only return an empty template.
+    if job.get("description"):
+        return job["description"][:5000]
+    # ATS with a per-job details endpoint (Eightfold; Workday, recognised by its link)
+    ref = job.get("desc_ref") or desc_ref_from_link(job.get("link", ""))
+    if ref:
+        text = fetch_description(ref)
+        if text:
+            return text
+
     link = job.get("link", "")
     if not link or not link.startswith("http"):
         return ""
@@ -1313,14 +1405,15 @@ def fetch_job_description(job: dict, config: dict) -> str:
                 el = soup.select_one(sel)
                 if el:
                     text = el.get_text(" ", strip=True)
-                    if len(text) > 100:
+                    # "{{" = unrendered JS template; short text = nav/header of a JS app
+                    if len(text) > MIN_DESC_CHARS and "{{" not in text:
                         return text[:5000]  # Cap at 5000 chars
 
             # Fallback: get body text
             body = soup.find("body")
             if body:
                 text = body.get_text(" ", strip=True)
-                if len(text) > 100:
+                if len(text) > MIN_DESC_CHARS and "{{" not in text:
                     return text[:5000]
 
     except Exception as e:
@@ -1775,6 +1868,10 @@ def run_scraper():
         futures = {executor.submit(_scrape_one, entry): entry for entry in urls}
         for future in as_completed(futures):
             scrape_results.append(future.result())
+    # Completion order is random; a fixed order keeps cross-source dedup (below) picking
+    # the same source every run.
+    scrape_results.sort(key=lambda r: r["url_entry"].get("name", ""))
+    cross_source_seen = {}
 
     # Scraping (and the general-search phase before it) is done — close every
     # pooled browser now rather than leaving them idle for the rest of the run.
@@ -1838,9 +1935,18 @@ def run_scraper():
                 job["matched_fields"] = match["fields"]
                 if matches_location(job, location_filters):
                     matching.append(job)
-            elif matches_candidate(job["title"], role_keywords, field_keywords, exclude_keywords):
+            elif (job.get("via_api") or _looks_like_job_link(job.get("link", ""))) \
+                    and matches_candidate(job["title"], role_keywords, field_keywords, exclude_keywords):
+                # Scraped HTML also yields product pages / blog posts / headings whose
+                # title happens to contain "AI" or "Software"; only trust API jobs and
+                # links that look like a posting.
                 if matches_location(job, location_filters):
                     candidates.append(job)
+
+        if not is_aggregator:  # an aggregator's jobs belong to many different companies
+            entry_name = url_entry.get("name", "")
+            matching = dedupe_across_sources(matching, entry_name, cross_source_seen)
+            candidates = dedupe_across_sources(candidates, entry_name, cross_source_seen)
 
         # Jobs with no role keyword in the title: decide by description (ordered rules)
         if candidates:

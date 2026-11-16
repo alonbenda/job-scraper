@@ -275,13 +275,14 @@
   "base": "https://apply.careers.microsoft.com",
   "domain": "microsoft.com"
  },
+ "NVIDIA": {
+  "type": "eightfold",
+  "base": "https://nvidia.eightfold.ai",
+  "domain": "nvidia.com"
+ },
  "HPE": {
   "type": "phenom",
   "url": "https://careers.hpe.com/us/en/search-results"
- },
- "synk": {
-  "type": "ashby",
-  "board": "Snyk"
  },
  "notraffic": {
   "type": "comeet",
@@ -297,7 +298,8 @@
   "location": "area",
   "date": "openDate",
   "site": "employerName",
-  "id": "jobId"
+  "id": "jobId",
+  "description": ["description", "requirements"]
  },
  "Teva": {
   "type": "json",
@@ -315,7 +317,12 @@
    "param": "start",
    "total": "count"
   },
-  "id": "id"
+  "id": "id",
+  "desc_ref": {
+   "type": "eightfold",
+   "base": "https://www.careers.teva",
+   "domain": "tevapharm.com"
+  }
  },
  "Develeap": {
   "type": "comeet",
