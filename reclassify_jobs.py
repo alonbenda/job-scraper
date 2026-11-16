@@ -22,6 +22,7 @@ Dry run by default — prints what would change. Pass --apply to write.
 
 import argparse
 import logging
+import random
 import time
 from collections import defaultdict
 
@@ -93,7 +94,7 @@ def main():
                 continue
             desc =js.fetch_job_description(api_job or {"link": r.get("link", "")}, config)
             if not (api_job and api_job.get("description")):
-                time.sleep(0.3)  # a network fetch was made — be polite
+                time.sleep(random.uniform(*js.DESC_FETCH_DELAY))  # a network fetch was made — be polite
             verdict = js.classify_by_description(desc, title)
             plan.append((r, verdict, "description" if desc else "no readable description"))
 

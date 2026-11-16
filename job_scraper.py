@@ -20,6 +20,7 @@ import argparse
 import smtplib
 import hashlib
 import re
+import random
 import threading
 import atexit
 from email.mime.text import MIMEText
@@ -41,6 +42,7 @@ CONFIG_FILE = SCRIPT_DIR / "config.json"
 SEEN_JOBS_FILE = SCRIPT_DIR / "seen_jobs.json"
 CV_FILE = SCRIPT_DIR / "cv_skills.json"  # Cached parsed CV skills
 MIN_DESC_CHARS = 300  # Shorter page text is a JS app's nav/header, not a job description
+DESC_FETCH_DELAY = (0.5, 1.5)  # random pause (seconds) between description fetches, to look less robotic
 MAX_DESC_FETCHES_PER_RUN = 100  # Cap on description fetches for jobs without a role keyword in the title
 LOG_FILE = SCRIPT_DIR / "scraper.log"
 
@@ -1962,7 +1964,7 @@ def run_scraper():
                     continue  # budget spent — picked up on a later run
                 desc_fetches += 1
                 verdict = classify_by_description(fetch_job_description(job, config), job["title"])
-                time.sleep(0.3)
+                time.sleep(random.uniform(*DESC_FETCH_DELAY))
                 if verdict == "reject":
                     # Remembered as a hidden row so the next run doesn't fetch it again
                     job["category"] = "rejected"
