@@ -236,30 +236,23 @@ def save_new_jobs(jobs: list[dict]):
                 row["dismissed"] = True  # hidden from the dashboard; kept only so it isn't re-fetched
             rows.append(row)
 
-        # Batch insert
+        # Batch insert. PostgREST rejects a bulk insert whose objects have different
+        # keys (PGRST102), and only some rows carry 'category'/'dismissed' — so post
+        # each key-shape as its own batch.
+        groups: dict[tuple, list[dict]] = {}
+        for r in rows:
+            groups.setdefault(tuple(sorted(r)), []).append(r)
         batch_size = 500
-        for i in range(0, len(rows), batch_size):
-            batch = rows[i:i + batch_size]
-            resp = requests.post(
-                f"{SUPABASE_URL}/rest/v1/jobs",
-                headers=_headers(prefer="resolution=merge-duplicates"),
-                json=batch,
-            )
-            if resp.status_code not in (200, 201) and any("category" in r for r in batch):
-                # The 'category'/'dismissed' columns may not exist yet — retry without them.
-                # Rejected rows are dropped on the retry: without 'dismissed' they would show up.
-                logger.warning("DB: save with 'category' failed (run the jobs.category/dismissed migration?) — retrying without it")
-                stripped = [{k: v for k, v in r.items() if k not in ("category", "dismissed")}
-                            for r in batch if r.get("category") != "rejected"]
-                if not stripped:
-                    continue
+        for group in groups.values():
+            for i in range(0, len(group), batch_size):
+                batch = group[i:i + batch_size]
                 resp = requests.post(
                     f"{SUPABASE_URL}/rest/v1/jobs",
                     headers=_headers(prefer="resolution=merge-duplicates"),
-                    json=stripped,
+                    json=batch,
                 )
-            if resp.status_code not in (200, 201):
-                logger.error(f"DB: Failed to save jobs: {resp.status_code} {resp.text}")
+                if resp.status_code not in (200, 201):
+                    logger.error(f"DB: Failed to save {len(batch)} jobs: {resp.status_code} {resp.text}")
     except Exception as e:
         logger.error(f"DB: Failed to save jobs: {e}")
 

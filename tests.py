@@ -1014,9 +1014,11 @@ def test_save_new_jobs_includes_category_only_when_set(monkeypatch):
         {"id": "a", "title": "t", "site": "s", "category": "maybe"},
         {"id": "b", "title": "t", "site": "s"},
     ])
-    rows = {r["id"]: r for r in sent[0]}
+    rows = {r["id"]: r for batch in sent for r in batch}
     assert rows["a"]["category"] == "maybe"
     assert "category" not in rows["b"]
+    # PostgREST rejects bulk inserts with differing keys, so each shape is its own request
+    assert len(sent) == 2 and all(len({tuple(sorted(r)) for r in batch}) == 1 for batch in sent)
 
 def test_save_new_jobs_rejected_rows_are_hidden(monkeypatch):
     sent = []
@@ -1026,19 +1028,17 @@ def test_save_new_jobs_rejected_rows_are_hidden(monkeypatch):
     assert sent[0][0]["category"] == "rejected"
     assert sent[0][0]["dismissed"] is True
 
-def test_save_new_jobs_drops_rejected_rows_when_columns_missing(monkeypatch):
+def test_save_new_jobs_mixed_rows_never_share_a_batch(monkeypatch):
     sent = []
-    def _fake_post(url, headers=None, json=None, **k):
-        sent.append(json)
-        return _FakeResponse({}, 400 if any("category" in r for r in json) else 201)
-    monkeypatch.setattr(db.requests, "post", _fake_post)
+    monkeypatch.setattr(db.requests, "post",
+                        lambda url, headers=None, json=None, **k: (sent.append(json), _FakeResponse({}, 201))[1])
     db.save_new_jobs([
         {"id": "r", "title": "t", "site": "s", "category": "rejected"},
         {"id": "m", "title": "t", "site": "s", "category": "maybe"},
+        {"id": "p", "title": "t", "site": "s"},
     ])
-    retry = sent[1]
-    assert [r["id"] for r in retry] == ["m"]  # rejected row must not be saved visible
-    assert all("category" not in r and "dismissed" not in r for r in retry)
+    assert len(sent) == 3
+    assert {r["id"] for batch in sent for r in batch if r.get("dismissed")} == {"r"}
 
 
 # ===========================================================================
@@ -1392,3 +1392,41 @@ def test_local_store_rename_job_ids(tmp_path, monkeypatch):
     store._seen_jobs = {"old": {"title": "x"}}
     store.rename_job_ids({"old": "new"})
     assert list(store._seen_jobs) == ["new"]
+
+
+# --- listing pages, 429, empty descriptions ---------------------------------
+
+def test_is_listing_title_detects_category_pages():
+    from job_scraper import is_listing_title
+    assert is_listing_title("משרות DevOps")
+    assert is_listing_title("Backend jobs")
+    assert not is_listing_title("DevOps Engineer")
+
+def test_fetch_via_api_raises_when_rate_limited(monkeypatch):
+    import api_fetchers
+    def _boom(url, name):
+        raise RuntimeError("429 Client Error: TOO MANY REQUESTS")
+    monkeypatch.setattr(api_fetchers, "_handler_for", lambda url: _boom)
+    import pytest
+    with pytest.raises(RuntimeError, match="rate-limited"):
+        api_fetchers.fetch_via_api("https://x.example/jobs", "Nope", None)
+
+
+def test_jobposting_description_from_json_ld():
+    import job_scraper
+    body = "Build things. " * 40
+    html = ('<html><script type="application/ld+json">{"@type":"WebSite"}</script>'
+            '<script type="application/ld+json">{"@type":"JobPosting","description":"<p>' + body + '</p>"}</script></html>')
+    assert job_scraper._jobposting_description(html).startswith("Build things.")
+    assert job_scraper._jobposting_description("<html></html>") == ""
+
+
+def test_salesforce_description_falls_back_to_selenium(monkeypatch):
+    import job_scraper
+    seen = []
+    monkeypatch.setattr(job_scraper, "try_static_fetch", lambda url: None)
+    monkeypatch.setattr(job_scraper, "_selenium_description", lambda link: (seen.append(link), "8+ years of experience")[1])
+    link = "https://careers.salesforce.com/company/careers/jobs/JR368460/lead-backend-software-engineer/"
+    assert job_scraper.fetch_job_description({"link": link, "title": "x"}, {}) == "8+ years of experience"
+    other = job_scraper.fetch_job_description({"link": "https://example.com/job/1", "title": "x"}, {})
+    assert other == "" and len(seen) == 1  # other hosts never launch a browser

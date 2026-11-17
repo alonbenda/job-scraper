@@ -73,6 +73,18 @@
   "type": "greenhouse",
   "token": "nice"
  },
+ "BigID": {
+  "type": "greenhouse",
+  "token": "bigid"
+ },
+ "Orca Security": {
+  "type": "greenhouse",
+  "token": "orcasecurity"
+ },
+ "SentinelOne": {
+  "type": "greenhouse",
+  "token": "sentinellabs"
+ },
  "Semperis": {
   "type": "ashby",
   "board": "semperis"

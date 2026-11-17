@@ -52,11 +52,16 @@ def _job(title, link, site, location="", posted_date="", external_id=None):
     return job
 
 
+_RETRY_429_PAUSES = (3, 10, 30)
+
+
 def _request(method, url, **kwargs):
-    """requests.request with one retry after a short pause on HTTP 429."""
+    """requests.request, retried with growing pauses while the server answers HTTP 429."""
     r = requests.request(method, url, **kwargs)
-    if r.status_code == 429:
-        time.sleep(3)
+    for pause in _RETRY_429_PAUSES:
+        if r.status_code != 429:
+            break
+        time.sleep(pause)
         r = requests.request(method, url, **kwargs)
     return r
 
@@ -839,6 +844,11 @@ def fetch_via_api(url: str, site_name: str, api: dict | None = None) -> list[dic
     try:
         jobs = handler(url, site_name)
     except Exception as e:
+        if "429" in str(e):
+            # Rate-limited even after retries. Falling back to scraping the page would
+            # yield a partial, differently-titled list (new IDs, no descriptions), so
+            # skip this site for the run instead.
+            raise RuntimeError(f"API rate-limited ({label}): {e}") from e
         logger.warning(f"  [{site_name}] API fetch failed ({label}): {e}")
         return None
     if jobs is not None:

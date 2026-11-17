@@ -786,6 +786,15 @@ _JOB_LINK_RE = re.compile(
     r"job[_-]?id|gh_jid|/career/[\w.-]+/?$", re.I)
 
 
+# Aggregators (Secret Hunter) expose category pages — "משרות DevOps", "Backend jobs" —
+# whose links look like postings. They are lists of jobs, not jobs.
+_LISTING_TITLE_RE = re.compile(r"^\s*משרות(?:\s|$)|\bjobs\s*$", re.I)
+
+
+def is_listing_title(title: str) -> bool:
+    return bool(_LISTING_TITLE_RE.search(title or ""))
+
+
 def _looks_like_job_link(link: str) -> bool:
     """A scraped link that plausibly points at one posting (/job/..., ?gh_jid=...) rather
     than a product page, blog post, team page or a section heading of the careers page."""
@@ -1363,6 +1372,51 @@ def load_cv_skills(config: dict) -> dict | None:
     return cv_data
 
 
+def _jobposting_description(html: str) -> str:
+    """Description from a schema.org JobPosting JSON-LD block, which many JS-rendered
+    career sites (Phenom, Salesforce, ...) embed for search engines even though the
+    visible page is an empty shell."""
+    from api_fetchers import _html_to_text
+    for m in re.finditer(r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', html or "", re.S | re.I):
+        try:
+            data = json.loads(m.group(1).strip())
+        except ValueError:
+            continue
+        for item in (data if isinstance(data, list) else [data]):
+            if isinstance(item, dict) and item.get("@type") == "JobPosting" and item.get("description"):
+                text = _html_to_text(item["description"])
+                if len(text) > MIN_DESC_CHARS:
+                    return text[:5000]
+    return ""
+
+
+# Sites whose job pages render the description only in JavaScript and expose no
+# JSON-LD / API for it. Read with a real browser; a few seconds per job.
+_SELENIUM_DESC_HOSTS = ("careers.salesforce.com", "www.salesforce.com")
+SELENIUM_DESC_WAIT = 12  # seconds to wait for the description to render
+
+
+def _selenium_description(link: str) -> str:
+    """Render the job page in the pooled browser and return the description text."""
+    from selenium.webdriver.common.by import By
+    # Salesforce lists /company/careers/jobs/JR123/slug/ on careers.salesforce.com, which
+    # 404s; the working page is the same path on www.salesforce.com with a lowercase ID.
+    m = re.match(r"https://careers\.salesforce\.com(/company/careers/jobs/)(JR\d+)(/.*)?$", link, re.I)
+    if m:
+        link = f"https://www.salesforce.com{m.group(1)}{m.group(2).lower()}{m.group(3) or '/'}"
+    driver = get_driver(True)
+    driver.get(link)
+    deadline = time.time() + SELENIUM_DESC_WAIT
+    while time.time() < deadline:
+        for sel in ("[class*='job-description']", "[class*='jobDescription']", "article", "main"):
+            for el in driver.find_elements(By.CSS_SELECTOR, sel):
+                text = el.text.strip()
+                if len(text) > MIN_DESC_CHARS and "{{" not in text:
+                    return text[:5000]
+        time.sleep(1)
+    return ""
+
+
 def fetch_job_description(job: dict, config: dict) -> str:
     """
     Fetch the full job description from the job's link.
@@ -1387,6 +1441,9 @@ def fetch_job_description(job: dict, config: dict) -> str:
         # Try static fetch (fast)
         html = try_static_fetch(link)
         if html:
+            ld_text = _jobposting_description(html)
+            if ld_text:
+                return ld_text
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, "html.parser")
 
@@ -1420,6 +1477,12 @@ def fetch_job_description(job: dict, config: dict) -> str:
 
     except Exception as e:
         logger.debug(f"  Could not fetch job description from {link}: {e}")
+
+    if urlparse(link).netloc in _SELENIUM_DESC_HOSTS:
+        try:
+            return _selenium_description(link)
+        except Exception as e:
+            logger.debug(f"  Selenium could not read {link}: {e}")
 
     return ""
 
@@ -1930,6 +1993,8 @@ def run_scraper():
             if is_aggregator and job["site"] not in _AGGREGATOR_SITE_NAMES:
                 job["new_company"] = True
                 logger.info(f"  🆕 New company via {url_entry.get('name')}: {job['site']} — {job['title']}")
+            if is_listing_title(job["title"]):
+                continue
             match = matches_job(job["title"], role_keywords, field_keywords, exclude_keywords)
             if match:
                 job["matched_keywords"] = match["all"]
@@ -1963,8 +2028,16 @@ def run_scraper():
                 if desc_fetches >= MAX_DESC_FETCHES_PER_RUN:
                     continue  # budget spent — picked up on a later run
                 desc_fetches += 1
-                verdict = classify_by_description(fetch_job_description(job, config), job["title"])
+                desc = fetch_job_description(job, config)
                 time.sleep(random.uniform(*DESC_FETCH_DELAY))
+                if not desc.strip():
+                    # Can't judge a job we can't read (JS-only page, blocked, rate-limited):
+                    # filing it as 'maybe' let 4-5 year jobs through. Not stored, so it's
+                    # retried on the next run.
+                    logger.info(f"  [{url_entry.get('name')}] no readable description, skipping for now: {job['title'][:80]}")
+                    seen_job_ids.discard(jid)
+                    continue
+                verdict = classify_by_description(desc, job["title"])
                 if verdict == "reject":
                     # Remembered as a hidden row so the next run doesn't fetch it again
                     job["category"] = "rejected"
