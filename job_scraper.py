@@ -27,7 +27,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from urllib.parse import urlparse, parse_qsl, urlencode
 
 from api_fetchers import fetch_via_api, fetch_description, desc_ref_from_link
@@ -154,6 +154,17 @@ def _launch_driver(headless: bool = True):
         driver = webdriver.Chrome(options=options)
 
     driver.set_page_load_timeout(30)
+    driver.set_script_timeout(30)
+    # Default HTTP read timeout to chromedriver is 120s x 3 retries; a wedged browser
+    # then blocks a worker for ~8 minutes per call. Cap it.
+    try:
+        executor = driver.command_executor
+        if hasattr(executor, "_client_config"):
+            executor._client_config.timeout = 45
+        elif hasattr(executor, "set_timeout"):
+            executor.set_timeout(45)
+    except Exception:
+        pass
     return driver
 
 
@@ -1929,10 +1940,28 @@ def run_scraper():
 
     # Run scraping in parallel
     scrape_results = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_scrape_one, entry): entry for entry in urls}
-        for future in as_completed(futures):
+    # Hard deadline for the whole phase, so one wedged site can't hang the run forever.
+    # On expiry, pending sites are recorded as errors and every browser is killed
+    # (which also unblocks any worker stuck inside a driver call).
+    phase_timeout = config.get("scrape_phase_timeout_seconds", 1800)
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    futures = {executor.submit(_scrape_one, entry): entry for entry in urls}
+    try:
+        for future in as_completed(futures, timeout=phase_timeout):
             scrape_results.append(future.result())
+    except FuturesTimeout:
+        stuck = [e for f, e in futures.items() if not f.done()]
+        logger.error(
+            f"⏱️ Scrape phase exceeded {phase_timeout}s; abandoning {len(stuck)} site(s): "
+            + ", ".join(e.get("name", e["url"]) for e in stuck)
+        )
+        for f, e in futures.items():
+            if not f.done():
+                f.cancel()
+                scrape_results.append({"url_entry": e, "jobs": [], "error": "scrape phase timeout"})
+        quit_all_drivers()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
     # Completion order is random; a fixed order keeps cross-source dedup (below) picking
     # the same source every run.
     scrape_results.sort(key=lambda r: r["url_entry"].get("name", ""))
