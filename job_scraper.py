@@ -124,6 +124,35 @@ _driver_registry = []
 _driver_registry_lock = threading.Lock()
 
 
+_chromedriver_path = None
+_chromedriver_resolved = False
+_chromedriver_lock = threading.Lock()
+
+
+def _get_chromedriver_path():
+    """
+    Resolve the chromedriver path once per process, under a lock.
+
+    ChromeDriverManager().install() checks the network for the latest version and
+    unpacks the binary. Called from every worker thread on every browser launch, it
+    was slow when the network was flaky and made threads fight over the same file
+    (WinError 5 'Access is denied'). Returns None if it can't be resolved, in which
+    case the caller falls back to Selenium Manager.
+    """
+    global _chromedriver_path, _chromedriver_resolved
+    with _chromedriver_lock:
+        if _chromedriver_resolved:
+            return _chromedriver_path
+        try:
+            from webdriver_manager.chrome import ChromeDriverManager
+            _chromedriver_path = ChromeDriverManager().install()
+        except Exception as e:
+            logger.warning(f"chromedriver download/check failed ({e}); using Selenium Manager")
+            _chromedriver_path = None
+        _chromedriver_resolved = True
+        return _chromedriver_path
+
+
 def _launch_driver(headless: bool = True):
     """Launch a brand-new Chrome WebDriver instance."""
     from selenium import webdriver
@@ -146,12 +175,11 @@ def _launch_driver(headless: bool = True):
     )
     options.add_experimental_option("excludeSwitches", ["enable-logging"])
 
-    try:
-        from webdriver_manager.chrome import ChromeDriverManager
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
-    except ImportError:
-        driver = webdriver.Chrome(options=options)
+    driver_path = _get_chromedriver_path()
+    if driver_path:
+        driver = webdriver.Chrome(service=Service(driver_path), options=options)
+    else:
+        driver = webdriver.Chrome(options=options)  # Selenium Manager fallback
 
     driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)

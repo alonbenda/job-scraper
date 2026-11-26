@@ -311,7 +311,10 @@
   "date": "openDate",
   "site": "employerName",
   "id": "jobId",
-  "description": ["description", "requirements"]
+  "description": [
+   "description",
+   "requirements"
+  ]
  },
  "Teva": {
   "type": "json",
@@ -530,5 +533,25 @@
  "Oracle Cloud (hdjq)": {
   "type": "oracle_page",
   "url": "https://hdjq.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/jobs?location=Israel&locationId=300000000228780&locationLevel=country&mode=location"
+ },
+ "SAP": {
+  "type": "json",
+  "url": "https://api.smartrecruiters.com/v1/companies/SAPITBusinessSysteme/postings",
+  "params": {
+   "country": "il",
+   "limit": 100
+  },
+  "list": "content",
+  "title": "name",
+  "link_template": "https://jobs.smartrecruiters.com/SAPITBusinessSysteme/{id}",
+  "location": [
+   "location.fullLocation"
+  ],
+  "date": "releasedDate",
+  "id": "id",
+  "paginate": {
+   "param": "offset",
+   "total": "totalFound"
+  }
  }
 }
